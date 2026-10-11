@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/csv"
 	"encoding/json"
+	"github.com/lamooof/clickshield/internal/analytics"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -342,7 +343,7 @@ func sessionFilters(w http.ResponseWriter, r *http.Request) (store.SessionFilter
 	f.DeviceSet = q.Has("device")
 	f.LandingURL = truncate(q.Get("landing_url"), 2048)
 	for key, values := range q {
-		if store.FilterableDimension(key) && len(values) > 0 {
+		if analytics.FilterableDimension(key) && len(values) > 0 {
 			if f.Dims == nil {
 				f.Dims = map[string]string{}
 			}
@@ -439,7 +440,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	st, e := s.store.FilteredStats(r.Context(), filter)
+	st, e := s.analytics.FilteredStats(r.Context(), filter)
 	if e != nil {
 		writeError(w, 500, "could not load stats")
 		return
@@ -490,7 +491,7 @@ func (s *Server) label(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Note = truncate(req.Note, 500)
 	a, _ := adminFrom(r.Context())
-	classID, e := s.store.SaveManual(r.Context(), id, req.Label, req.Note, a.UserID)
+	classID, e := s.service.Label(r.Context(), id, req.Label, req.Note, a.UserID)
 	if e != nil {
 		writeError(w, 422, e.Error())
 		return

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/lamooof/clickshield/internal/analytics"
+	"github.com/lamooof/clickshield/internal/domain"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -121,15 +124,36 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 		t.Fatal("key list leaks secrets")
 	}
 	// Expired credentials are rejected independently of revocation.
-	_, expired, e := st.CreateAnalyticsKey(ctx, p.ID, "expired", 1)
+	_, expired, e := s.analytics.Repository.CreateAnalyticsKey(ctx, p.ID, "expired", 1)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = st.Pool.Exec(ctx, `UPDATE analytics_api_keys SET expires_at=now()-interval '1 second' WHERE project_id=$1 AND name='expired'`, p.ID); e != nil {
+	if _, e = st.Pool.Exec(ctx, `UPDATE analytics.analytics_api_keys SET expires_at=now()-interval '1 second' WHERE project_id=$1 AND name='expired'`, p.ID); e != nil {
 		t.Fatal(e)
 	}
 	if code, _ := call("GET", "/v1/reports", nil, expired, false); code != 401 {
 		t.Fatalf("expired key accepted: %d", code)
+	}
+
+	sid, _ := store.UUID()
+	vid, _ := store.UUID()
+	bid, _ := store.UUID()
+	batch := domain.EventBatch{SessionID: sid, VisitorID: vid, BatchID: bid, PageURL: "https://example.test/", PageIndex: 1, Events: []domain.Event{{Type: "pageview", TS: time.Now().UnixMilli(), PageIndex: 1}, {Type: "business", TS: time.Now().UnixMilli(), Name: "checkout", Properties: map[string]any{"step": float64(1)}}}}
+	if _, err := st.Ingest(ctx, p, batch, domain.RemoteMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		ok, err := analytics.NewProjector(st.Pool).ProjectOne(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+	}
+	code, httpEvents := call("GET", "/v1/analytics/events", nil, token, false)
+	if code != 200 {
+		t.Fatal(code, httpEvents)
 	}
 	// Real SDK client negotiates MCP and calls a project-bound tool.
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
@@ -144,6 +168,23 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 	result, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "analytics_report", Arguments: map[string]any{"report": "events"}})
 	if e != nil || result.IsError {
 		t.Fatalf("MCP call: %+v %v", result, e)
+	}
+
+	rawStructured, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mcpEvents map[string]any
+	if err = json.Unmarshal(rawStructured, &mcpEvents); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(httpEvents, mcpEvents) {
+		t.Fatalf("HTTP/MCP differ: HTTP=%+v MCP=%+v", httpEvents, mcpEvents)
+	}
+	for _, path := range []string{"/v1/analytics/events?timezone=invalid", "/v1/analytics/events?from=2026-10-02T00:00:00Z&to=2026-10-01T00:00:00Z"} {
+		if code, _ := call("GET", path, nil, token, false); code != 400 {
+			t.Fatalf("invalid query accepted: %s %d", path, code)
+		}
 	}
 	session.Close()
 	r, _ := http.NewRequest("POST", srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))

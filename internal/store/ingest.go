@@ -4,148 +4,130 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"strings"
-	"time"
-
 	"github.com/jackc/pgx/v5"
-	"github.com/lamooof/clickshield/internal/bots"
+	"github.com/lamooof/clickshield/internal/antifraud"
 	"github.com/lamooof/clickshield/internal/domain"
-	"github.com/lamooof/clickshield/internal/traffic"
+	"github.com/lamooof/clickshield/internal/feature"
+	"net"
 )
 
-type IngestResult struct {
-	InsertedEvents int    `json:"inserted_events"`
-	Decision       string `json:"decision"`
+type IngestResult = antifraud.IngestResult
+
+func (s *Store) Ingest(ctx context.Context, p domain.Project, b domain.EventBatch, r domain.RemoteMeta) (IngestResult, error) {
+	return antifraud.NewIngestor(s).Ingest(ctx, p, b, r)
 }
 
-func (s *Store) Ingest(ctx context.Context, project domain.Project, b domain.EventBatch, remote domain.RemoteMeta) (IngestResult, error) {
-	tx, e := s.Pool.BeginTx(ctx, pgx.TxOptions{})
-	if e != nil {
-		return IngestResult{}, e
+func (s *Store) WriteBatch(ctx context.Context, prepared antifraud.PreparedBatch) (int, bool, error) {
+	if err := s.EnsureRawPartitions(ctx); err != nil {
+		return 0, false, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	project, b, remote := prepared.Project, prepared.Batch, prepared.Remote
+	tx, e := s.Pool.Begin(ctx)
+	if e != nil {
+		return 0, false, e
+	}
+	defer tx.Rollback(ctx)
+	// Serialize initial creation and retries for this session, including ownership.
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, b.SessionID); e != nil {
+		return 0, false, e
+	}
+	var receiptProject, receiptVisitor string
+	e = tx.QueryRow(ctx, `INSERT INTO ingest_batches(session_id,batch_id,project_id,visitor_key) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING project_id::text,visitor_key`, b.SessionID, b.BatchID, project.ID, b.VisitorID).Scan(&receiptProject, &receiptVisitor)
+	if IsNotFound(e) {
+		e = tx.QueryRow(ctx, `SELECT project_id::text,visitor_key FROM ingest_batches WHERE session_id=$1 AND batch_id=$2`, b.SessionID, b.BatchID).Scan(&receiptProject, &receiptVisitor)
+		if e != nil {
+			return 0, false, e
+		}
+		if receiptProject != project.ID || receiptVisitor != b.VisitorID {
+			return 0, false, fmt.Errorf("batch belongs to another session owner")
+		}
+		blocked, e := visitorBlocked(ctx, tx, project.ID, b.VisitorID, prepared.BlockedClasses)
+		if e != nil {
+			return 0, false, e
+		}
+		return 0, blocked, tx.Commit(ctx)
+	}
+	if e != nil {
+		return 0, false, e
+	}
 	visitorID, e := UUID()
 	if e != nil {
-		return IngestResult{}, e
+		return 0, false, e
 	}
 	e = tx.QueryRow(ctx, `INSERT INTO visitors(id,project_id,visitor_key,fingerprint) VALUES($1,$2,$3,$4) ON CONFLICT(project_id,visitor_key) DO UPDATE SET fingerprint=CASE WHEN EXCLUDED.fingerprint<>'' THEN EXCLUDED.fingerprint ELSE visitors.fingerprint END,last_seen_at=now() RETURNING id::text`, visitorID, project.ID, b.VisitorID, b.Fingerprint).Scan(&visitorID)
 	if e != nil {
-		return IngestResult{}, fmt.Errorf("visitor: %w", e)
+		return 0, false, e
 	}
-	device, _ := json.Marshal(b.Device)
-	automation, _ := json.Marshal(b.Automation)
+	device, e := json.Marshal(b.Device)
+	if e != nil {
+		return 0, false, e
+	}
+	automation, e := json.Marshal(b.Automation)
+	if e != nil {
+		return 0, false, e
+	}
 	var ip any
-	ipText := ""
 	if remote.IP != nil {
-		ipText = remote.IP.String()
-		ip = ipText
+		ip = remote.IP.String()
 	}
 	page := b.PageIndex
-	if page < 1 {
-		page = 1
-	}
-	bot, _ := bots.Identify(remote.UserAgent, ipText)
 	var sessionID string
-	e = tx.QueryRow(ctx, `INSERT INTO sessions(id,project_id,visitor_id,visitor_key,fingerprint,yandex_client_id,google_client_id,yclid,gclid,utm_source,utm_medium,utm_campaign,utm_term,utm_content,referrer,landing_url,last_page_url,ip,asn,as_org,country,user_agent,device_type,device,automation,page_count,bot_name,bot_category,rb_clickid) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25::jsonb,$26,$27,$28,$29)
-	ON CONFLICT(id) DO UPDATE SET visitor_id=EXCLUDED.visitor_id,visitor_key=EXCLUDED.visitor_key,fingerprint=CASE WHEN EXCLUDED.fingerprint<>'' THEN EXCLUDED.fingerprint ELSE sessions.fingerprint END,yandex_client_id=CASE WHEN EXCLUDED.yandex_client_id<>'' THEN EXCLUDED.yandex_client_id ELSE sessions.yandex_client_id END,google_client_id=CASE WHEN EXCLUDED.google_client_id<>'' THEN EXCLUDED.google_client_id ELSE sessions.google_client_id END,yclid=CASE WHEN EXCLUDED.yclid<>'' THEN EXCLUDED.yclid ELSE sessions.yclid END,rb_clickid=CASE WHEN EXCLUDED.rb_clickid<>'' THEN EXCLUDED.rb_clickid ELSE sessions.rb_clickid END,gclid=CASE WHEN EXCLUDED.gclid<>'' THEN EXCLUDED.gclid ELSE sessions.gclid END,utm_source=sessions.utm_source,utm_medium=sessions.utm_medium,utm_campaign=sessions.utm_campaign,utm_term=sessions.utm_term,utm_content=sessions.utm_content,referrer=sessions.referrer,landing_url=CASE WHEN sessions.landing_url='' THEN EXCLUDED.landing_url ELSE sessions.landing_url END,last_page_url=EXCLUDED.last_page_url,ip=COALESCE(EXCLUDED.ip,sessions.ip),asn=CASE WHEN EXCLUDED.asn<>'' THEN EXCLUDED.asn ELSE sessions.asn END,as_org=CASE WHEN EXCLUDED.as_org<>'' THEN EXCLUDED.as_org ELSE sessions.as_org END,country=CASE WHEN EXCLUDED.country<>'' THEN EXCLUDED.country ELSE sessions.country END,user_agent=CASE WHEN EXCLUDED.user_agent<>'' THEN EXCLUDED.user_agent ELSE sessions.user_agent END,bot_name=CASE WHEN EXCLUDED.user_agent<>'' THEN EXCLUDED.bot_name ELSE sessions.bot_name END,bot_category=CASE WHEN EXCLUDED.user_agent<>'' THEN EXCLUDED.bot_category ELSE sessions.bot_category END,device_type=EXCLUDED.device_type,device=sessions.device||EXCLUDED.device,automation=sessions.automation||EXCLUDED.automation,page_count=GREATEST(sessions.page_count,EXCLUDED.page_count),last_seen_at=now(),updated_at=now() WHERE sessions.project_id=EXCLUDED.project_id AND sessions.visitor_key=EXCLUDED.visitor_key RETURNING id::text`, b.SessionID, project.ID, visitorID, b.VisitorID, b.Fingerprint, b.YandexClientID, b.GoogleClientID, b.YCLID, b.GCLID, b.UTM.Source, b.UTM.Medium, b.UTM.Campaign, b.UTM.Term, b.UTM.Content, b.Referrer, b.LandingURL, b.PageURL, ip, remote.ASN, remote.ASOrg, remote.Country, remote.UserAgent, deviceType(b.Device.Type), device, automation, page, bot.Name, bot.Category, b.RBClickID).Scan(&sessionID)
+	state, err := loadFeatureState(ctx, tx, b.SessionID)
+	if err != nil {
+		return 0, false, err
+	}
+	events := make([]domain.Event, 0, len(prepared.Events))
+	for _, event := range prepared.Events {
+		events = append(events, event.Event)
+	}
+	state.Add(events)
+	stateRaw, err := json.Marshal(state)
+	if err != nil {
+		return 0, false, err
+	}
+	e = tx.QueryRow(ctx, `INSERT INTO sessions(id,project_id,visitor_id,visitor_key,fingerprint,yandex_client_id,google_client_id,yclid,gclid,utm_source,utm_medium,utm_campaign,utm_term,utm_content,referrer,landing_url,last_page_url,ip,asn,as_org,country,user_agent,device_type,device,automation,page_count,bot_name,bot_category,rb_clickid,browser,os,region,city,traffic_source,traffic_channel,referrer_host,attribution_basis,finished_at,finish_requested_at,data_revision,feature_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25::jsonb,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,NULL,CASE WHEN $38 THEN now() END,1,$39::jsonb)
+	ON CONFLICT(id) DO UPDATE SET visitor_id=EXCLUDED.visitor_id,visitor_key=EXCLUDED.visitor_key,fingerprint=CASE WHEN EXCLUDED.fingerprint<>'' THEN EXCLUDED.fingerprint ELSE sessions.fingerprint END,yandex_client_id=CASE WHEN EXCLUDED.yandex_client_id<>'' THEN EXCLUDED.yandex_client_id ELSE sessions.yandex_client_id END,google_client_id=CASE WHEN EXCLUDED.google_client_id<>'' THEN EXCLUDED.google_client_id ELSE sessions.google_client_id END,yclid=CASE WHEN EXCLUDED.yclid<>'' THEN EXCLUDED.yclid ELSE sessions.yclid END,rb_clickid=CASE WHEN EXCLUDED.rb_clickid<>'' THEN EXCLUDED.rb_clickid ELSE sessions.rb_clickid END,gclid=CASE WHEN EXCLUDED.gclid<>'' THEN EXCLUDED.gclid ELSE sessions.gclid END,utm_source=sessions.utm_source,utm_medium=sessions.utm_medium,utm_campaign=sessions.utm_campaign,utm_term=sessions.utm_term,utm_content=sessions.utm_content,referrer=sessions.referrer,landing_url=CASE WHEN sessions.landing_url='' THEN EXCLUDED.landing_url ELSE sessions.landing_url END,last_page_url=EXCLUDED.last_page_url,ip=COALESCE(EXCLUDED.ip,sessions.ip),asn=CASE WHEN EXCLUDED.asn<>'' THEN EXCLUDED.asn ELSE sessions.asn END,as_org=CASE WHEN EXCLUDED.as_org<>'' THEN EXCLUDED.as_org ELSE sessions.as_org END,country=CASE WHEN EXCLUDED.country<>'' THEN EXCLUDED.country ELSE sessions.country END,user_agent=CASE WHEN EXCLUDED.user_agent<>'' THEN EXCLUDED.user_agent ELSE sessions.user_agent END,bot_name=CASE WHEN EXCLUDED.user_agent<>'' THEN EXCLUDED.bot_name ELSE sessions.bot_name END,bot_category=CASE WHEN EXCLUDED.user_agent<>'' THEN EXCLUDED.bot_category ELSE sessions.bot_category END,device_type=EXCLUDED.device_type,device=sessions.device||EXCLUDED.device,automation=sessions.automation||EXCLUDED.automation,page_count=GREATEST(sessions.page_count,EXCLUDED.page_count),browser=EXCLUDED.browser,os=EXCLUDED.os,region=CASE WHEN EXCLUDED.region<>'' THEN EXCLUDED.region ELSE sessions.region END,city=CASE WHEN EXCLUDED.city<>'' THEN EXCLUDED.city ELSE sessions.city END,traffic_source=CASE WHEN sessions.traffic_channel='' THEN EXCLUDED.traffic_source ELSE sessions.traffic_source END,traffic_channel=CASE WHEN sessions.traffic_channel='' THEN EXCLUDED.traffic_channel ELSE sessions.traffic_channel END,referrer_host=CASE WHEN sessions.traffic_channel='' THEN EXCLUDED.referrer_host ELSE sessions.referrer_host END,attribution_basis=CASE WHEN sessions.traffic_channel='' THEN EXCLUDED.attribution_basis ELSE sessions.attribution_basis END,finished_at=NULL,finish_requested_at=CASE WHEN $38 THEN now() ELSE sessions.finish_requested_at END,data_revision=sessions.data_revision+1,feature_state=EXCLUDED.feature_state,last_seen_at=now(),updated_at=now() WHERE sessions.project_id=EXCLUDED.project_id AND sessions.visitor_key=EXCLUDED.visitor_key RETURNING id::text`, b.SessionID, project.ID, visitorID, b.VisitorID, b.Fingerprint, b.YandexClientID, b.GoogleClientID, b.YCLID, b.GCLID, b.UTM.Source, b.UTM.Medium, b.UTM.Campaign, b.UTM.Term, b.UTM.Content, b.Referrer, b.LandingURL, b.PageURL, ip, remote.ASN, remote.ASOrg, remote.Country, remote.UserAgent, b.Device.Type, device, automation, page, prepared.BotName, prepared.BotCategory, b.RBClickID, prepared.Browser, prepared.OS, remote.Region, remote.City, prepared.Attribution.Source, prepared.Attribution.Channel, prepared.Attribution.ReferrerHost, prepared.Attribution.Basis, b.Finish, stateRaw).Scan(&sessionID)
 	if e != nil {
-		return IngestResult{}, fmt.Errorf("session: %w", e)
+		return 0, false, fmt.Errorf("session: %w", e)
 	}
-	browser, osName := ParseUserAgent(remote.UserAgent)
-	if _, e = tx.Exec(ctx, `UPDATE sessions SET browser=$2,os=$3,region=CASE WHEN $4<>'' THEN $4 ELSE region END,city=CASE WHEN $5<>'' THEN $5 ELSE city END WHERE id=$1`, b.SessionID, browser, osName, remote.Region, remote.City); e != nil {
-		return IngestResult{}, e
+	pages := map[int]string{}
+	rows, e := tx.Query(ctx, `SELECT page_index,page_url FROM session_pages WHERE session_id=$1`, b.SessionID)
+	if e != nil {
+		return 0, false, e
 	}
-	a := traffic.Classify(b, project.AllowedOrigins)
-	if _, e = tx.Exec(ctx, `UPDATE sessions SET traffic_source=$2,traffic_channel=$3,referrer_host=$4,attribution_basis=$5 WHERE id=$1 AND traffic_channel=''`, b.SessionID, a.Source, a.Channel, a.ReferrerHost, a.Basis); e != nil {
-		return IngestResult{}, e
+	for rows.Next() {
+		var index int
+		var page string
+		if e = rows.Scan(&index, &page); e != nil {
+			rows.Close()
+			return 0, false, e
+		}
+		pages[index] = page
 	}
-	inserted := 0
-	now := time.Now().UTC()
-	for i, event := range b.Events {
-		payload, err := json.Marshal(event)
-		if err != nil {
-			return IngestResult{}, err
-		}
-		at := time.UnixMilli(event.TS).UTC()
-		if event.TS <= 0 || at.Before(now.Add(-7*24*time.Hour)) || at.After(now.Add(10*time.Minute)) {
-			at = now
-		}
-		tag, err := tx.Exec(ctx, `INSERT INTO raw_events(project_id,session_id,batch_id,event_index,event_time,event_type,payload) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(session_id,batch_id,event_index) DO NOTHING`, project.ID, b.SessionID, b.BatchID, i, at, event.Type, payload)
-		if err != nil {
-			return IngestResult{}, err
-		}
-		inserted += int(tag.RowsAffected())
-		if tag.RowsAffected() > 0 && (event.Type == "business" || event.Type == "click" || event.Type == "scroll") {
-			index := event.PageIndex
-			if index < 1 {
-				index = b.PageIndex
-			}
-			pageURL := b.PageURL
-			// Page index resolves an older page in a batch sent after an SPA transition.
-			if err = tx.QueryRow(ctx, `SELECT page_url FROM session_pages WHERE session_id=$1 AND page_index=$2`, b.SessionID, index).Scan(&pageURL); err != nil && !IsNotFound(err) {
-				return IngestResult{}, err
-			}
-			if event.PageURL != "" {
-				pageURL = event.PageURL
-			}
-			pageURL = strings.SplitN(pageURL, "?", 2)[0]
-			if event.Type == "business" {
-				props, err := json.Marshal(event.Properties)
-				if err != nil {
-					return IngestResult{}, err
-				}
-				if event.Properties == nil {
-					props = []byte("{}")
-				}
-				if _, err = tx.Exec(ctx, `INSERT INTO business_events(project_id,session_id,batch_id,event_index,event_time,page_url,name,properties) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT DO NOTHING`, project.ID, b.SessionID, b.BatchID, i, at, pageURL, event.Name, props); err != nil {
-					return IngestResult{}, err
-				}
-			} else if event.VW > 0 && event.VH > 0 {
-				if _, err = tx.Exec(ctx, `INSERT INTO heatmap_events(session_id,batch_id,event_index,event_time,page_url,event_type,viewport_width,viewport_height,document_height,x,y,depth) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING`, b.SessionID, b.BatchID, i, at, pageURL, event.Type, int(event.VW), int(event.VH), event.DocumentHeight, event.X, event.Y+event.ScrollY, event.Depth); err != nil {
-					return IngestResult{}, err
-				}
-			}
-		}
-		if event.Type == "pageview" && tag.RowsAffected() > 0 {
-			pageURL, _ := event.Extra["page_url"].(string)
-			if pageURL == "" {
-				pageURL = b.PageURL
-			}
-			index := event.PageIndex
-			if index < 1 {
-				index = b.PageIndex
-			}
-			if _, err = tx.Exec(ctx, `INSERT INTO session_pages(session_id,page_index,page_url,viewed_at) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, b.SessionID, index, pageURL, at); err != nil {
-				return IngestResult{}, err
-			}
-		}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return 0, false, e
+	}
+	antifraud.ResolvePages(&prepared, pages)
+	inserted, blocked, e := writeBatchEvents(ctx, tx, prepared)
+	if e != nil {
+		return 0, false, e
+	}
+	return inserted, blocked, tx.Commit(ctx)
+}
 
+func visitorBlocked(ctx context.Context, tx pgx.Tx, project, visitor string, classes []string) (bool, error) {
+	if len(classes) == 0 {
+		return false, nil
 	}
-	// Reopen a previously scored session only when this batch actually added new
-	// events. An idempotent retry with the same batch_id must not do that.
-	if inserted > 0 {
-		if _, e = tx.Exec(ctx, `UPDATE sessions SET finished_at=NULL,updated_at=now() WHERE id=$1 AND project_id=$2`, b.SessionID, project.ID); e != nil {
-			return IngestResult{}, e
-		}
-	}
-	// A final beacon carries the finish marker together with its events. This
-	// keeps short first-page visits from waiting for the stale-session timeout
-	// if the separate /session/finish beacon reaches the server first or fails.
-	if b.Finish {
-		if _, e = tx.Exec(ctx, `UPDATE sessions SET finish_requested_at=now(),updated_at=now() WHERE id=$1 AND project_id=$2`, b.SessionID, project.ID); e != nil {
-			return IngestResult{}, e
-		}
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return IngestResult{}, e
-	}
-	decision, _ := s.Decision(ctx, project, b.VisitorID)
-	return IngestResult{inserted, decision}, nil
+	var blocked bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=$1 AND visitor_key=$2 AND last_seen_at>now()-interval '30 days' AND current_classification=ANY($3))`, project, visitor, classes).Scan(&blocked)
+	return blocked, err
 }
 
 func (s *Store) RequestFinish(ctx context.Context, projectID string, r domain.FinishRequest) error {
-	tag, e := s.Pool.Exec(ctx, `UPDATE sessions SET finish_requested_at=now(),last_seen_at=GREATEST(last_seen_at,now()),updated_at=now() WHERE id=$1 AND project_id=$2 AND visitor_key=$3`, r.SessionID, projectID, r.VisitorID)
+	tag, e := s.Pool.Exec(ctx, `UPDATE sessions SET finish_requested_at=now(),last_seen_at=GREATEST(last_seen_at,now()),data_revision=data_revision+1,updated_at=now() WHERE id=$1 AND project_id=$2 AND visitor_key=$3`, r.SessionID, projectID, r.VisitorID)
 	if e != nil {
 		return e
 	}
@@ -155,43 +137,41 @@ func (s *Store) RequestFinish(ctx context.Context, projectID string, r domain.Fi
 	return nil
 }
 
-// Decision blocks only the visitor whose own sessions were classified as bots.
-// The fingerprint is not used: it is computed by the client from the user
-// agent and screen, is shared by every identical phone in one time zone and can
-// be forged, so a few bot sessions with a popular fingerprint would block real
-// visitors.
-func (s *Store) Decision(ctx context.Context, p domain.Project, visitor string) (string, error) {
-	var blocked []string
-	switch p.Mode {
-	case domain.ModeBlocking:
-		blocked = []string{domain.Bot, domain.KnownBot}
-	case domain.ModeBlockingBots:
-		blocked = []string{domain.Bot}
-	default:
-		return "MONITOR", nil
-	}
-	var b bool
-	e := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=$1 AND last_seen_at>now()-interval '30 days' AND current_classification=ANY($3) AND visitor_key=$2)`, p.ID, visitor, blocked).Scan(&b)
-	if e != nil {
-		return "MONITOR", e
-	}
-	if b {
-		return "BLOCK", nil
-	}
-	return "ALLOW", nil
-}
-func deviceType(v string) string {
-	switch strings.ToLower(v) {
-	case "desktop", "mobile", "tablet":
-		return strings.ToLower(v)
-	default:
-		return "unknown"
-	}
-}
 func IPFromRequest(remoteAddr string) net.IP {
 	host, _, e := net.SplitHostPort(remoteAddr)
 	if e != nil {
 		host = remoteAddr
 	}
 	return net.ParseIP(host)
+}
+
+func loadFeatureState(ctx context.Context, tx pgx.Tx, id string) (feature.State, error) {
+	var state feature.State
+	var raw []byte
+	err := tx.QueryRow(ctx, `SELECT feature_state FROM sessions WHERE id=$1`, id).Scan(&raw)
+	if IsNotFound(err) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	if raw != nil {
+		return state, json.Unmarshal(raw, &state)
+	}
+	rows, err := tx.Query(ctx, `SELECT payload FROM raw_events WHERE session_id=$1 ORDER BY event_time,id`, id)
+	if err != nil {
+		return state, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event domain.Event
+		if err = rows.Scan(&raw); err != nil {
+			return state, err
+		}
+		if err = json.Unmarshal(raw, &event); err != nil {
+			return state, err
+		}
+		state.Add([]domain.Event{event})
+	}
+	return state, rows.Err()
 }

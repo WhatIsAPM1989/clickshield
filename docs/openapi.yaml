@@ -236,9 +236,24 @@ paths:
   /v1/operations:
     get:
       security: [{ cookieAuth: [] }]
-      summary: Operational counters for scoring and delivery
+      summary: Operational counters for scoring, delivery, analytics projections and replay GC
       responses:
-        '200': { description: Operational counters }
+        '200':
+          description: Operational counters; analytics_lag_seconds is the age of the oldest unacknowledged projection
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events_last_hour: { type: integer, format: int64 }
+                  unscored_older_than_hour: { type: integer, format: int64 }
+                  outbox_pending_older_hour: { type: integer, format: int64 }
+                  outbox_failed: { type: integer, format: int64 }
+                  outbox_sent_last_day: { type: integer, format: int64 }
+                  analytics_pending: { type: integer, format: int64 }
+                  analytics_lag_seconds: { type: integer, format: int64 }
+                  analytics_retries: { type: integer, format: int64 }
+                  replay_gc_failed: { type: integer, format: int64 }
 
   /v1/quality:
     get:
@@ -566,8 +581,8 @@ paths:
           schema: { type: string, enum: [hour, day, week, month] }
         - in: query
           name: series
-          description: Values of the first dimension to split out, up to 10; repeat the parameter
-          schema: { type: array, items: { type: string } }
+          description: Values of the first dimension to split out, up to 20; repeat the parameter
+          schema: { type: array, maxItems: 20, items: { type: string } }
           style: form
           explode: true
         - in: query

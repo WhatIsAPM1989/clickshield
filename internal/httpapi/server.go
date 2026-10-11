@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lamooof/clickshield/internal/analytics"
+	"github.com/lamooof/clickshield/internal/replay"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,7 +26,14 @@ import (
 //go:embed assets/*
 var assets embed.FS
 
+type Dependencies struct {
+	Analytics *analytics.Repository
+	Replay    *replay.Service
+}
+
 type Server struct {
+	analytics      *analytics.Service
+	replay         *replay.Service
 	cfg            config.Config
 	store          *store.Store
 	service        *service.Service
@@ -86,7 +95,10 @@ func (l *limiter) AllowN(key string, n int) bool {
 	return e.count <= l.max
 }
 
-func New(cfg config.Config, st *store.Store, svc *service.Service, c *cryptox.Cipher, log *slog.Logger) *Server {
+func New(cfg config.Config, st *store.Store, svc *service.Service, c *cryptox.Cipher, log *slog.Logger, dependencies ...Dependencies) *Server {
+	if svc == nil && st != nil {
+		svc = service.New(st, nil, cfg, log)
+	}
 	s := &Server{
 		cfg: cfg, store: st, service: svc, cipher: c, log: log, mux: http.NewServeMux(),
 		// Login attempts per address and per user name, so a botnet cannot
@@ -101,6 +113,19 @@ func New(cfg config.Config, st *store.Store, svc *service.Service, c *cryptox.Ci
 		metrikaLimiter: newLimiter(30, time.Minute),
 		metrikaReader:  integration.NewMetrikaReader(),
 		projectKeys:    newProjectCache(st, 30*time.Second),
+	}
+	if st != nil {
+		reader := analytics.NewRepository(st.Pool)
+		s.replay = replay.NewService(replay.NewRepository(st.Pool), nil)
+		if len(dependencies) > 0 {
+			if dependencies[0].Analytics != nil {
+				reader = dependencies[0].Analytics
+			}
+			if dependencies[0].Replay != nil {
+				s.replay = dependencies[0].Replay
+			}
+		}
+		s.analytics = analytics.NewService(reader)
 	}
 	s.routes()
 	return s

@@ -64,7 +64,7 @@ def main():
         assert request('/v1/projects/'+pid+'/replay',{'enabled':True,'sample_rate':100,'retention_days':7},'PUT')[0]==200
     status,cfg=request('/v1/tracker/config?key='+urllib.parse.quote(project['public_key']),auth=False,origin=project['allowed_origins'][0]);assert status==200
     if args.enable_replay:assert cfg['replay_enabled']
-    for name in ['rrweb-record.js','rrweb-replay.js','replay-recorder.js','replay-viewer.js','replay.html','analytics.js','product-analytics.js','analytics-tools.js','reports.css']:
+    for name in ['rrweb-record.js','rrweb-replay.js','replay-recorder.js','replay-viewer.js','replay.html','analytics.js','analytics-api.js','analytics-state.js','analytics-filters.js','analytics-model.js','analytics-chart.js','analytics-table.js','analytics-common.js','analytics-project-picker.js','product-analytics.js','analytics-tools.js','reports.css']:
         assert request('/assets/'+name,auth=False)[0]==200,name
     print(json.dumps({'health':'ok','authenticated_analytics':'ok','unauthorized_access':'rejected','foreign_origin':'rejected','replay_enabled':cfg['replay_enabled'],'project_id':pid},ensure_ascii=False))
 if __name__=='__main__':main()

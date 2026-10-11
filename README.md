@@ -79,12 +79,12 @@ make build
 Без `CLICKSHIELD_TEST_DATABASE_URL` тесты PostgreSQL пропускаются. Для полного
 прогона задайте URL отдельной тестовой БД и выполните `make test-integration`.
 [Пошаговые инструкции](docs/development.md). GitHub Actions выполняет проверки
-с отдельной PostgreSQL, сборку и проверку встроенных rrweb-бандлов.
+с отдельными PostgreSQL и MinIO, сборку и проверку встроенных rrweb-бандлов.
 
 ## Устройство репозитория
 
 ```text
-cmd/server/               запуск HTTP API и фоновых задач
+cmd/server/               CLI: serve, worker, migrate, bootstrap и backfill
 internal/httpapi/         маршруты, авторизация и встроенный frontend
 internal/feature/         агрегирование поведенческих признаков
 internal/scoring/         правила и объяснения оценки риска
@@ -92,14 +92,25 @@ internal/bots/, asn/      каталоги ботов, IP-диапазоны и 
 internal/geo/, traffic/   геолокация и атрибуция трафика
 internal/store/           PostgreSQL и SQL-миграции
 internal/integration/     Метрика, GA4, VK Реклама
-internal/service/         расчёт, очистка, очередь и мониторинг
+internal/antifraud/       сценарии ingest, scoring и ручной разметки
+internal/analytics/       отчёты, проекции и собственная схема analytics
+internal/replay/          метаданные replay, S3 и очередь удаления
+internal/service/         фоновые задачи, доставка и мониторинг
 sdk/                      клиент чтения аналитики
 scripts/                  проверки, vendoring и резервные копии
 docs/                     руководства и OpenAPI
 examples/demo-site/       сайт для проверки трекера
 ```
 
-Миграции применяются при старте. Очередь доставки использует PostgreSQL
+Compose запускает отдельные migrate и bootstrap перед serve/worker. При прямом
+запуске выполните их явно: `clickshield migrate`, `clickshield bootstrap`; затем
+запустите `clickshield serve` и `clickshield worker` отдельными процессами.
+HTTP не выполняет backfill и не запускает фоновые задачи. Отчёты читают проекции
+в схеме `analytics` той же БД с небольшой задержкой. Replay требует отдельного
+S3-совместимого хранилища и переменных `REPLAY_S3_*`.
+[Порядок обновления старой установки](docs/architecture-refactor.md).
+
+Очередь доставки использует PostgreSQL
 transactional outbox; Redis не требуется. Бинарник содержит UI и rrweb,
 загрузка библиотек с CDN при работе не нужна. Docker-сборка загружает базу
 IP→ASN, поэтому её содержимое зависит от даты сборки.

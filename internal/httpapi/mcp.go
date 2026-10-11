@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"github.com/lamooof/clickshield/internal/analytics"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,65 +54,11 @@ func (s *Server) mcpReport(ctx context.Context, req *mcp.CallToolRequest, q mcpQ
 			*v.dst = &t
 		}
 	}
-	if f.From != nil && f.To != nil && !f.To.After(*f.From) {
-		return nil, mcpOutput{}, errors.New("to must be after from")
+	query := analytics.Query{Report: q.Report, Filter: f, Timezone: q.Timezone, Event: q.Event, PageURL: q.PageURL, Width: q.Width}
+	if err := query.Validate(); err != nil {
+		return nil, mcpOutput{}, err
 	}
-	zone := q.Timezone
-	if zone == "" {
-		zone = "Europe/Moscow"
-	}
-	if _, e := time.LoadLocation(zone); e != nil {
-		return nil, mcpOutput{}, e
-	}
-	var data any
-	var err error
-	if store.ValidReport(q.Report) {
-		data, err = s.store.AggregateReport(ctx, q.Report, zone, f)
-	} else {
-		switch q.Report {
-		case "events":
-			data, err = s.store.BusinessReport(ctx, f)
-		case "properties":
-			if q.Event == "" {
-				return nil, mcpOutput{}, errors.New("event required")
-			}
-			data, err = s.store.EventProperties(ctx, q.Event, f)
-		case "journey":
-			data, err = s.store.Journey(ctx, f)
-		case "retention":
-			data, err = s.store.Retention(ctx, f, zone)
-		case "heatmap":
-			if q.Width < 0 || q.Width > 20000 {
-				return nil, mcpOutput{}, errors.New("invalid width")
-			}
-			data, err = s.store.Heatmap(ctx, f, q.PageURL, q.Width)
-		case "goals", "funnels":
-			defs, e := s.store.Definitions(ctx, pid)
-			err = e
-			reports := []store.FunnelReport{}
-			if err == nil {
-				for _, d := range defs {
-					if (q.Report == "goals" && d.Kind == "goal") || (q.Report == "funnels" && d.Kind == "funnel") {
-						r, e := s.store.FunnelReport(ctx, d, f)
-						if e != nil {
-							err = e
-							break
-						}
-						reports = append(reports, r)
-					}
-				}
-			}
-			data = reports
-		case "links":
-			data, err = s.store.Links(ctx, pid, f.From, f.To)
-		case "pixels":
-			data, err = s.store.Pixels(ctx, pid, f.From, f.To)
-		case "annotations":
-			data, err = s.store.Annotations(ctx, pid, f.From, f.To)
-		default:
-			return nil, mcpOutput{}, errors.New("unknown report")
-		}
-	}
+	data, err := s.analytics.Report(ctx, query)
 	if err != nil {
 		s.log.Error("MCP report", "error", err)
 		return nil, mcpOutput{}, errors.New("could not load report")

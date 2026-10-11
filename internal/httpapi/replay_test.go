@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"github.com/lamooof/clickshield/internal/domain"
-	"github.com/lamooof/clickshield/internal/store"
+	"github.com/lamooof/clickshield/internal/replay"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +11,7 @@ import (
 func TestReplayValidation(t *testing.T) {
 	id := "12345678-1234-4123-8123-123456789abc"
 	now := time.Now().UnixMilli()
-	p := store.ReplayPart{SessionID: id, VisitorID: id, PageID: id, PageIndex: 1, PageURL: "https://example.com/?email=secret&yclid=x", PartCount: 1, StartedAt: now, EndedAt: now, Data: []byte("[]")}
+	p := replay.Part{SessionID: id, VisitorID: id, PageID: id, PageIndex: 1, PageURL: "https://example.com/?email=secret&yclid=x", PartCount: 1, StartedAt: now, EndedAt: now, Data: []byte("[]")}
 	if e := validateReplayPart(&p); e != "" || strings.Contains(p.PageURL, "secret") {
 		t.Fatalf("validation=%q URL=%q", e, p.PageURL)
 	}
@@ -20,7 +20,7 @@ func TestReplayValidation(t *testing.T) {
 		t.Fatal("accepted invalid fragment count")
 	}
 	p.PartCount = 1
-	p.Data = make([]byte, store.MaxReplayPart+1)
+	p.Data = make([]byte, replay.MaxPart+1)
 	if validateReplayPart(&p) == "" {
 		t.Fatal("accepted oversized fragment")
 	}

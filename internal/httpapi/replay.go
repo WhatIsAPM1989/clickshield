@@ -2,19 +2,20 @@ package httpapi
 
 import (
 	"errors"
+	"github.com/lamooof/clickshield/internal/replay"
 	"github.com/lamooof/clickshield/internal/store"
 	"net/http"
 	"time"
 )
 
-func validateReplayPart(p *store.ReplayPart) string {
+func validateReplayPart(p *replay.Part) string {
 	if !store.ValidUUID(p.SessionID) || !store.ValidUUID(p.VisitorID) || !store.ValidUUID(p.PageID) {
 		return "valid session, visitor and page IDs required"
 	}
 	if p.Sequence < 0 || p.Sequence > 5000 || p.PartCount < 1 || p.PartCount > 64 || p.PartIndex < 0 || p.PartIndex >= p.PartCount || p.PageIndex < 1 || p.PageIndex > 1000 {
 		return "invalid fragment indexes"
 	}
-	if len(p.Data) == 0 || len(p.Data) > store.MaxReplayPart {
+	if len(p.Data) == 0 || len(p.Data) > replay.MaxPart {
 		return "fragment must be 1–131072 bytes"
 	}
 	now := time.Now().UnixMilli()
@@ -40,7 +41,7 @@ func (s *Server) replayIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "recording is disabled")
 		return
 	}
-	var req store.ReplayPart
+	var req replay.Part
 	if e := readJSON(w, r, &req, 200<<10); e != nil {
 		writeError(w, 400, "invalid replay payload")
 		return
@@ -53,13 +54,13 @@ func (s *Server) replayIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 429, "replay rate limit exceeded")
 		return
 	}
-	e := s.store.SaveReplayPart(r.Context(), p.ID, req)
+	e := s.replay.SaveReplayPart(r.Context(), p.ID, req)
 	switch {
-	case errors.Is(e, store.ErrNotFound):
+	case errors.Is(e, replay.ErrNotFound):
 		writeError(w, 409, "session unavailable or recording disabled")
-	case errors.Is(e, store.ErrReplayQuota):
+	case errors.Is(e, replay.ErrQuota):
 		writeError(w, 413, e.Error())
-	case errors.Is(e, store.ErrReplayConflict):
+	case errors.Is(e, replay.ErrConflict):
 		writeError(w, 409, e.Error())
 	case e != nil:
 		s.log.Error("replay ingest", "error", e)
@@ -74,7 +75,7 @@ func (s *Server) replayData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid session id")
 		return
 	}
-	data, e := s.store.Replay(r.Context(), id)
+	data, e := s.replay.Replay(r.Context(), id)
 	if e != nil {
 		s.log.Error("replay load", "error", e)
 		writeError(w, 500, "could not load replay")
@@ -88,7 +89,7 @@ func (s *Server) deleteReplay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid session id")
 		return
 	}
-	if _, e := s.store.Pool.Exec(r.Context(), `WITH mark AS (UPDATE sessions SET replay_deleted_at=now() WHERE id=$1 RETURNING id) DELETE FROM replay_recordings WHERE session_id IN(SELECT id FROM mark)`, id); e != nil {
+	if e := s.replay.Delete(r.Context(), id); e != nil {
 		writeError(w, 500, "could not delete replay")
 		return
 	}

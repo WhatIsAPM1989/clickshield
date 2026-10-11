@@ -1,4 +1,4 @@
-package store
+package analytics
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"math/bits"
 	"sort"
 	"strings"
-	"time"
 )
 
 // Presets use fixed SQL expressions; request values are always bound parameters.
@@ -108,7 +107,7 @@ func (m *ReportMetrics) scanTargets() []any {
 // Visits not yet scored have no features and are left out of the average.
 // A visit is a bounce, as in Yandex Metrica, when it has one page and under 15 seconds of active time.
 const reportMetricsSQL = `count(*) AS visits,count(DISTINCT s.visitor_id),
-	count(DISTINCT s.visitor_id) FILTER(WHERE NOT EXISTS(SELECT 1 FROM sessions p WHERE p.project_id=s.project_id AND p.visitor_id=s.visitor_id AND p.started_at<s.started_at)),
+	count(DISTINCT s.visitor_id) FILTER(WHERE NOT EXISTS(SELECT 1 FROM analytics.sessions p WHERE p.project_id=s.project_id AND p.visitor_id=s.visitor_id AND p.started_at<s.started_at)),
 	COALESCE(sum(GREATEST(COALESCE(f.page_count,0),pv.pages,s.page_count,1)),0)::bigint,
 	count(*) FILTER(WHERE GREATEST(COALESCE(f.page_count,0),pv.pages,s.page_count,1)<=1 AND f.active_time_ms<15000),
 	count(*) FILTER(WHERE s.current_classification='HUMAN'),
@@ -117,12 +116,12 @@ const reportMetricsSQL = `count(*) AS visits,count(DISTINCT s.visitor_id),
 	count(*) FILTER(WHERE s.current_classification='KNOWN_BOT'),
 	COALESCE(sum(o.leads),0)::bigint,COALESCE(sum(o.qualified),0)::bigint,
 	count(*) FILTER(WHERE o.leads>0),count(*) FILTER(WHERE o.qualified>0),
-	count(*) FILTER(WHERE EXISTS(SELECT 1 FROM replay_recordings rr WHERE rr.session_id=s.id AND rr.expires_at>now())),
+	count(*) FILTER(WHERE EXISTS(SELECT 1 FROM analytics.replay_recordings rr WHERE rr.session_id=s.id AND rr.expires_at>now())),
 	COALESCE(avg(f.active_time_ms),0)::double precision`
 
-const reportFromSQL = ` FROM sessions s LEFT JOIN session_features f ON f.session_id=s.id
-	LEFT JOIN LATERAL(SELECT count(*) AS pages FROM session_pages WHERE session_id=s.id) pv ON true
-	LEFT JOIN LATERAL(SELECT count(*) AS leads,count(*) FILTER(WHERE status='QUALIFIED') AS qualified FROM lead_outcomes WHERE session_id=s.id) o ON true
+const reportFromSQL = ` FROM analytics.sessions s LEFT JOIN analytics.session_features f ON f.session_id=s.id
+	LEFT JOIN LATERAL(SELECT count(*) AS pages FROM analytics.session_pages WHERE session_id=s.id) pv ON true
+	LEFT JOIN LATERAL(SELECT count(*) AS leads,count(*) FILTER(WHERE status='QUALIFIED') AS qualified FROM analytics.lead_outcomes WHERE session_id=s.id) o ON true
 	WHERE `
 
 type ReportRow struct {
@@ -148,7 +147,7 @@ func timeExpressions(m map[string]string, args []any, timezone string) []any {
 	return args
 }
 
-func (s *Store) AggregateReport(ctx context.Context, kind, timezone string, filter SessionFilter) (AggregateReport, error) {
+func (s *Repository) AggregateReport(ctx context.Context, kind, timezone string, filter SessionFilter) (AggregateReport, error) {
 	out := AggregateReport{Kind: kind, Dimensions: reportDimensions[kind], Rows: []ReportRow{}, Timezone: timezone}
 	if !ValidReport(kind) {
 		return out, fmt.Errorf("unknown report")
@@ -198,149 +197,6 @@ func (s *Store) AggregateReport(ctx context.Context, kind, timezone string, filt
 			}
 		}
 		out.Rows = append(out.Rows, r)
-	}
-	return out, rows.Err()
-}
-
-var timelineUnits = map[string]string{"hour": "hour", "day": "day", "week": "week", "month": "month"}
-
-const maxTimelinePoints = 1500
-
-type TimelineSeries struct {
-	Key    string          `json:"key"`
-	Points []ReportMetrics `json:"points"`
-}
-type Timeline struct {
-	Interval string           `json:"interval"`
-	Buckets  []string         `json:"buckets"`
-	Total    []ReportMetrics  `json:"total"`
-	Series   []TimelineSeries `json:"series"`
-}
-
-func ValidInterval(v string) bool { _, ok := timelineUnits[v]; return ok }
-
-// TimelineBuckets lists every bucket start between from and to in the zone, formatted like SQL.
-func TimelineBuckets(interval string, from, to time.Time, loc *time.Location) ([]string, error) {
-	start := from.In(loc)
-	switch interval {
-	case "hour":
-		start = time.Date(start.Year(), start.Month(), start.Day(), start.Hour(), 0, 0, 0, loc)
-	case "day":
-		start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, loc)
-	case "week":
-		start = time.Date(start.Year(), start.Month(), start.Day()-(int(start.Weekday())+6)%7, 0, 0, 0, 0, loc)
-	case "month":
-		start = time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, loc)
-	}
-	out := []string{}
-	seen := map[string]bool{}
-	for t := start; t.Before(to); {
-		label := t.In(loc).Format("2006-01-02 15:00")
-		if !seen[label] {
-			seen[label] = true
-			out = append(out, label)
-		}
-		if len(out) > maxTimelinePoints {
-			return nil, fmt.Errorf("too many points")
-		}
-		switch interval {
-		case "hour":
-			t = t.Add(time.Hour)
-		case "day":
-			t = t.AddDate(0, 0, 1)
-		case "week":
-			t = t.AddDate(0, 0, 7)
-		default:
-			t = t.AddDate(0, 1, 0)
-		}
-	}
-	return out, nil
-}
-
-// ReportTimeline splits the report's first dimension into series over time. Without
-// explicit series the five largest values are used.
-func (s *Store) ReportTimeline(ctx context.Context, kind, interval, timezone string, series []string, totalOnly bool, filter SessionFilter) (Timeline, error) {
-	out := Timeline{Interval: interval, Total: []ReportMetrics{}, Series: []TimelineSeries{}}
-	if !ValidReport(kind) || !ValidInterval(interval) || filter.From == nil || filter.To == nil {
-		return out, fmt.Errorf("invalid timeline")
-	}
-	loc, e := time.LoadLocation(timezone)
-	if e != nil {
-		return out, e
-	}
-	if out.Buckets, e = TimelineBuckets(interval, *filter.From, *filter.To, loc); e != nil {
-		return out, e
-	}
-	index := map[string]int{}
-	for i, b := range out.Buckets {
-		index[b] = i
-	}
-	out.Total = make([]ReportMetrics, len(out.Buckets))
-	where, args := sessionWhere(filter)
-	expressions := dimensionExpressions()
-	key := expressions[reportDimensions[kind][0]]
-	switch reportDimensions[kind][0] {
-	case "day", "hour", "weekday":
-		totalOnly = true
-		key = "s.traffic_channel" // grouped but filtered out: only totals are returned
-	}
-	if !totalOnly && len(series) == 0 {
-		rows, e := s.Pool.Query(ctx, `SELECT `+key+` FROM sessions s WHERE `+where+` GROUP BY 1 ORDER BY count(*) DESC,1 LIMIT 5`, args...)
-		if e != nil {
-			return out, e
-		}
-		for rows.Next() {
-			var v string
-			if e = rows.Scan(&v); e != nil {
-				rows.Close()
-				return out, e
-			}
-			series = append(series, v)
-		}
-		rows.Close()
-		if e = rows.Err(); e != nil {
-			return out, e
-		}
-	}
-	if totalOnly {
-		series = nil
-	}
-	args = append(args, timezone)
-	bucket := fmt.Sprintf("to_char(date_trunc('%s',s.started_at AT TIME ZONE $%d),'YYYY-MM-DD HH24:00')", timelineUnits[interval], len(args))
-	seriesIndex := map[string]int{}
-	for _, v := range series {
-		if _, ok := seriesIndex[v]; ok {
-			continue
-		}
-		seriesIndex[v] = len(out.Series)
-		out.Series = append(out.Series, TimelineSeries{Key: v, Points: make([]ReportMetrics, len(out.Buckets))})
-	}
-	args = append(args, series)
-	query := `SELECT ` + bucket + `,` + key + `,GROUPING(` + key + `),` + reportMetricsSQL + reportFromSQL + where + ` GROUP BY GROUPING SETS((` + bucket + `,` + key + `),(` + bucket + `)) HAVING GROUPING(` + key + `)=1 OR ` + key + fmt.Sprintf(`=ANY($%d::text[])`, len(args))
-	rows, e := s.Pool.Query(ctx, query, args...)
-	if e != nil {
-		return out, e
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var b string
-		var k *string
-		var grouping int32
-		var m ReportMetrics
-		if e = rows.Scan(append([]any{&b, &k, &grouping}, m.scanTargets()...)...); e != nil {
-			return out, e
-		}
-		i, ok := index[b]
-		if !ok {
-			continue
-		}
-		if grouping == 1 {
-			out.Total[i] = m
-		} else if k != nil {
-			if j, ok := seriesIndex[*k]; ok {
-				out.Series[j].Points[i] = m
-			}
-		}
 	}
 	return out, rows.Err()
 }

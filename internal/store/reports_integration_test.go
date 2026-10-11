@@ -71,7 +71,7 @@ func TestAggregateReports(t *testing.T) {
 	}
 	f := SessionFilter{ProjectID: p.ID}
 	for _, kind := range []string{"sources", "campaigns", "landing", "devices", "daily"} {
-		r, e := s.AggregateReport(ctx, kind, "Europe/Moscow", f)
+		r, e := projectedReports(t, s).AggregateReport(ctx, kind, "Europe/Moscow", f)
 		if e != nil {
 			t.Fatalf("%s: %v", kind, e)
 		}
@@ -129,28 +129,28 @@ func TestAggregateReports(t *testing.T) {
 		}
 	}
 	// Parent rows of a hierarchy count their children exactly, including unique visitors.
-	camp, e := s.AggregateReport(ctx, "campaigns", "UTC", f)
+	camp, e := projectedReports(t, s).AggregateReport(ctx, "campaigns", "UTC", f)
 	if e != nil || camp.Rows[0].Level != 1 || camp.Rows[0].Visitors != 1 {
 		t.Fatalf("campaign parents: %+v %v", camp.Rows, e)
 	}
 	from, to := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
 	tf := f
 	tf.From, tf.To = &from, &to
-	tl, e := s.ReportTimeline(ctx, "devices", "day", "Europe/Moscow", nil, false, tf)
+	tl, e := projectedReports(t, s).ReportTimeline(ctx, "devices", "day", "Europe/Moscow", nil, false, tf)
 	if e != nil || len(tl.Buckets) != 3 || tl.Total[1].Visits != 3 || len(tl.Series) != 2 || tl.Series[0].Key != "desktop" || tl.Series[0].Points[1].Visits != 2 {
 		t.Fatalf("timeline: %+v %v", tl, e)
 	}
 	tf.Dims = map[string]string{"utm_medium": "organic"}
-	organic, e := s.AggregateReport(ctx, "utm", "UTC", tf)
+	organic, e := projectedReports(t, s).AggregateReport(ctx, "utm", "UTC", tf)
 	if e != nil || organic.Totals.Visits != 1 {
 		t.Fatalf("dimension filter: %+v %v", organic.Totals, e)
 	}
-	u, e := s.AggregateReport(ctx, "daily", "UTC", f)
+	u, e := projectedReports(t, s).AggregateReport(ctx, "daily", "UTC", f)
 	if e != nil || u.Rows[0].Dimensions[0] != "2026-10-10" {
 		t.Fatalf("UTC date: %+v %v", u, e)
 	}
 	f.Source = "nonexistent"
-	empty, e := s.AggregateReport(ctx, "sources", "UTC", f)
+	empty, e := projectedReports(t, s).AggregateReport(ctx, "sources", "UTC", f)
 	if e != nil || len(empty.Rows) != 0 || empty.Totals.Visits != 0 {
 		t.Fatalf("empty: %+v %v", empty, e)
 	}

@@ -84,3 +84,33 @@ go generate ./internal/bots
 Проверьте diff `internal/bots/ranges.go`. Не меняйте vendored и генерируемые
 файлы вручную. Для UI-проверки используйте [demo-сайт](../examples/demo-site/index.html)
 и [чек-лист](validation.md).
+
+## Полная проверка S3 и upgrade
+
+CI собирает MinIO из закреплённого тега исходников и запускает закрытый тестовый
+bucket. Для локального S3 можно использовать отдельный MinIO на localhost:
+
+```bash
+GOBIN="$PWD/output/test-tools" go install github.com/minio/minio@RELEASE.2025-04-22T22-12-26Z
+MINIO_ROOT_USER=test-access MINIO_ROOT_PASSWORD=test-secret-only \
+  output/test-tools/minio server output/test-minio-data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
+```
+
+В другом терминале задайте URL тестовой PostgreSQL и S3:
+
+```bash
+export CLICKSHIELD_TEST_S3_ENDPOINT=http://localhost:9000
+export CLICKSHIELD_TEST_S3_ACCESS_KEY=test-access
+export CLICKSHIELD_TEST_S3_SECRET_KEY=test-secret-only
+make check
+```
+
+Без S3 env тесты сервиса replay используют in-memory объекты, а прямой тест S3
+пропускается. Полная проверка требует оба хранилища. PostgreSQL-роль тестов должна
+иметь `CREATEDB`: upgrade-тест создаёт отдельную БД со старой схемой, проверяет
+перенос raw/replay, затем удаляет эту БД. Тестовые данные не должны смешиваться
+с рабочими. Тесты бизнес-правил, очередей и shutdown сервиса работают без БД.
+
+Для запуска бинарника экспортируйте конфигурацию и явно выполните `migrate`,
+`bootstrap`; запускайте `serve` и `worker` в разных терминалах. Bootstrap требует
+постоянный публичный ключ проекта. Backfill выполняется отдельными командами.

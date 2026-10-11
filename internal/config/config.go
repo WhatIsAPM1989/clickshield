@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/lamooof/clickshield/internal/replay"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 )
 
 type Config struct {
+	ReplayS3                replay.S3Config
 	HTTPAddr                string
 	DatabaseURL             string
 	AdminUsername           string
@@ -38,8 +40,11 @@ type Config struct {
 	WorkerInterval          time.Duration
 }
 
-func Load() (Config, error) {
+func Load() (Config, error) { return LoadFor("serve") }
+
+func LoadFor(command string) (Config, error) {
 	cfg := Config{
+		ReplayS3:                replay.S3Config{Endpoint: strings.TrimSpace(os.Getenv("REPLAY_S3_ENDPOINT")), Bucket: strings.TrimSpace(os.Getenv("REPLAY_S3_BUCKET")), AccessKey: os.Getenv("REPLAY_S3_ACCESS_KEY"), SecretKey: os.Getenv("REPLAY_S3_SECRET_KEY"), Region: getenv("REPLAY_S3_REGION", "us-east-1")},
 		HTTPAddr:                getenv("HTTP_ADDR", ":8080"),
 		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		AdminUsername:           strings.TrimSpace(getenv("ADMIN_USERNAME", "admin")),
@@ -60,6 +65,9 @@ func Load() (Config, error) {
 		ASNDatabase:             getenv("ASN_DATABASE", "/app/ip2asn.tsv.gz"),
 		WorkerInterval:          5 * time.Second,
 	}
+	if cfg.ReplayS3.Endpoint != "" && (cfg.ReplayS3.Bucket == "" || cfg.ReplayS3.AccessKey == "" || cfg.ReplayS3.SecretKey == "") {
+		return Config{}, errors.New("REPLAY_S3_BUCKET, REPLAY_S3_ACCESS_KEY and REPLAY_S3_SECRET_KEY are required with REPLAY_S3_ENDPOINT")
+	}
 	var err error
 	if cfg.RawEventsTTL, err = durationEnv("RAW_EVENTS_TTL", 7*24*time.Hour); err != nil {
 		return Config{}, err
@@ -74,20 +82,31 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.SessionSecret = []byte(os.Getenv("SESSION_SECRET"))
-	if cfg.EncryptionKey, err = encryptionKey(os.Getenv("ENCRYPTION_KEY")); err != nil {
-		return Config{}, err
-	}
+	if key := os.Getenv("ENCRYPTION_KEY"); key != "" {
+		cfg.EncryptionKey, err = encryptionKey(key)
+		if err != nil {
+			return Config{}, err
+		}
 
+	}
+	if command == "migrate" || command == "backfill" {
+		if cfg.DatabaseURL == "" {
+			return Config{}, errors.New("DATABASE_URL is required")
+		}
+		return cfg, nil
+	}
 	switch {
+	case command == "bootstrap" && cfg.BootstrapProjectKey == "":
+		return Config{}, errors.New("BOOTSTRAP_PROJECT_KEY is required for repeatable bootstrap")
 	case cfg.DatabaseURL == "":
 		return Config{}, errors.New("DATABASE_URL is required")
-	case cfg.AdminUsername == "":
+	case command == "bootstrap" && cfg.AdminUsername == "":
 		return Config{}, errors.New("ADMIN_USERNAME is required")
-	case len(cfg.AdminPassword) < 12:
+	case command == "bootstrap" && len(cfg.AdminPassword) < 12:
 		return Config{}, errors.New("ADMIN_PASSWORD must contain at least 12 characters")
 	case len(cfg.SessionSecret) < 32:
 		return Config{}, errors.New("SESSION_SECRET must contain at least 32 bytes")
-	case len(cfg.EncryptionKey) != 32:
+	case (command == "serve" || command == "worker" || command == "bootstrap") && len(cfg.EncryptionKey) != 32:
 		return Config{}, errors.New("ENCRYPTION_KEY must decode to exactly 32 bytes")
 	case cfg.RawEventsTTL < time.Hour:
 		return Config{}, errors.New("RAW_EVENTS_TTL must be at least 1h")

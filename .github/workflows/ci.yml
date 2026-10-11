@@ -30,6 +30,9 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       CLICKSHIELD_TEST_DATABASE_URL: postgres://clickshield_test:ci-test-only@localhost:5432/clickshield_test?sslmode=disable
+      CLICKSHIELD_TEST_S3_ENDPOINT: http://localhost:9000
+      CLICKSHIELD_TEST_S3_ACCESS_KEY: ci-minio-test
+      CLICKSHIELD_TEST_S3_SECRET_KEY: ci-minio-test-only
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -42,6 +45,20 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: go mod verify
+      - name: Start isolated S3-compatible storage
+        env:
+          MINIO_ROOT_USER: ci-minio-test
+          MINIO_ROOT_PASSWORD: ci-minio-test-only
+        run: |
+          mkdir -p "$RUNNER_TEMP/minio-bin" "$RUNNER_TEMP/minio-data"
+          GOBIN="$RUNNER_TEMP/minio-bin" go install github.com/minio/minio@RELEASE.2025-04-22T22-12-26Z
+          "$RUNNER_TEMP/minio-bin/minio" server "$RUNNER_TEMP/minio-data" --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >"$RUNNER_TEMP/minio.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/minio.log"
+          exit 1
       - run: make check
       - run: make build
       - name: Verify embedded replay bundles

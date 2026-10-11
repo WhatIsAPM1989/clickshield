@@ -73,5 +73,14 @@ GET  /v1/outbox
 Пересчитать отдельные сессии с текущими правилами можно без запуска HTTP-сервера:
 
 ```bash
-clickshield --rescore SESSION_ID [SESSION_ID...]
+clickshield rescore SESSION_ID [SESSION_ID...]
+# Воспроизвести сохранённые входы и правила конкретной автоматической оценки:
+clickshield reproduce CLASSIFICATION_ID
 ```
+
+Отчёты и `/v1/stats` читают проекции `analytics` и могут отставать от записи
+сессий. `/v1/operations` показывает `analytics_pending`, `analytics_lag_seconds`,
+`analytics_retries`, `replay_gc_failed`; остальные поля сохранены. HTTP и MCP
+используют общий сценарий отчётов и одну проверку параметров.
+
+`PUT /v1/projects/{id}/replay` возвращает 503 при попытке включить запись без S3.

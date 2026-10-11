@@ -307,3 +307,21 @@ type Delivery struct {
 	EventName      string
 	Attempts       int
 }
+
+type OutboxClaim struct {
+	ID       int64
+	Lease    string
+	Attempts int
+}
+
+type Operations struct {
+	AnalyticsPending       int64 `json:"analytics_pending"`
+	AnalyticsLagSeconds    int64 `json:"analytics_lag_seconds"`
+	AnalyticsRetries       int64 `json:"analytics_retries"`
+	ReplayGCFailed         int64 `json:"replay_gc_failed"`
+	EventsLastHour         int64 `json:"events_last_hour"`
+	UnscoredOlderThanHour  int64 `json:"unscored_older_than_hour"`
+	OutboxPendingOlderHour int64 `json:"outbox_pending_older_hour"`
+	OutboxFailed           int64 `json:"outbox_failed"`
+	OutboxSentLastDay      int64 `json:"outbox_sent_last_day"`
+}

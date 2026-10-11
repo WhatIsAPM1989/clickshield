@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lamooof/clickshield/internal/antifraud"
 	"github.com/lamooof/clickshield/internal/domain"
 )
 
@@ -39,13 +40,17 @@ func (s *Store) Integrations(ctx context.Context, projectID string) ([]domain.In
 	}
 	return out, rows.Err()
 }
-func (s *Store) ClaimOutbox(ctx context.Context) (int64, bool, error) {
-	var id int64
-	e := s.Pool.QueryRow(ctx, `WITH c AS (SELECT id FROM integration_outbox WHERE status IN ('PENDING','RETRY') AND next_attempt_at<=now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE integration_outbox o SET status='SENDING',locked_at=now(),attempts=attempts+1 FROM c WHERE o.id=c.id RETURNING o.id`).Scan(&id)
-	if IsNotFound(e) {
-		return 0, false, nil
+func (s *Store) ClaimOutbox(ctx context.Context) (domain.OutboxClaim, bool, error) {
+	lease, err := UUID()
+	if err != nil {
+		return domain.OutboxClaim{}, false, err
 	}
-	return id, e == nil, e
+	claim := domain.OutboxClaim{Lease: lease}
+	err = s.Pool.QueryRow(ctx, `WITH c AS (SELECT id FROM integration_outbox WHERE status IN ('PENDING','RETRY') AND next_attempt_at<=now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE integration_outbox o SET status='SENDING',locked_at=now(),lease=$1,attempts=attempts+1 FROM c WHERE o.id=c.id RETURNING o.id,o.attempts`, lease).Scan(&claim.ID, &claim.Attempts)
+	if IsNotFound(err) {
+		return domain.OutboxClaim{}, false, nil
+	}
+	return claim, err == nil, err
 }
 func (s *Store) Delivery(ctx context.Context, id int64) (domain.Delivery, error) {
 	var d domain.Delivery
@@ -75,39 +80,19 @@ func (s *Store) Delivery(ctx context.Context, id int64) (domain.Delivery, error)
 	}
 	return d, rows.Err()
 }
-func (s *Store) FinishDelivery(ctx context.Context, id int64, status, lastError string, retryAfter time.Duration) error {
+func (s *Store) FinishDelivery(ctx context.Context, claim domain.OutboxClaim, status, lastError string, retryAfter time.Duration) error {
 	var next any
 	if retryAfter > 0 {
 		next = time.Now().UTC().Add(retryAfter)
 	}
-	_, e := s.Pool.Exec(ctx, `WITH u AS (UPDATE integration_outbox SET status=$2,last_error=$3,next_attempt_at=COALESCE($4,next_attempt_at),sent_at=CASE WHEN $2='SENT' THEN now() ELSE sent_at END WHERE id=$1 RETURNING integration_id) UPDATE integrations i SET last_status=$2,last_error=$3,last_sent_at=CASE WHEN $2='SENT' THEN now() ELSE i.last_sent_at END,updated_at=now() FROM u WHERE i.id=u.integration_id`, id, status, lastError, next)
+	tag, e := s.Pool.Exec(ctx, `WITH u AS (UPDATE integration_outbox SET status=$2,last_error=$3,next_attempt_at=COALESCE($4,next_attempt_at),sent_at=CASE WHEN $2='SENT' THEN now() ELSE sent_at END WHERE id=$1 AND lease=$5 AND status='SENDING' AND locked_at>now()-interval '5 minutes' RETURNING integration_id) UPDATE integrations i SET last_status=$2,last_error=$3,last_sent_at=CASE WHEN $2='SENT' THEN now() ELSE i.last_sent_at END,updated_at=now() FROM u WHERE i.id=u.integration_id`, claim.ID, status, lastError, next, claim.Lease)
+	if e == nil && tag.RowsAffected() == 0 {
+		return antifraud.ErrChanged
+	}
 	return e
 }
 func (s *Store) ResetStuckOutbox(ctx context.Context) error {
-	_, e := s.Pool.Exec(ctx, `UPDATE integration_outbox SET status='RETRY',next_attempt_at=now(),last_error='worker lock expired' WHERE status='SENDING' AND locked_at<now()-interval '5 minutes'`)
-	return e
-}
-func (s *Store) Cleanup(ctx context.Context, rawTTL, aggregateTTL time.Duration) error {
-	if _, e := s.Pool.Exec(ctx, `DELETE FROM replay_recordings WHERE expires_at<=now()`); e != nil {
-		return e
-	}
-	rawBefore := time.Now().UTC().Add(-rawTTL)
-	if _, e := s.Pool.Exec(ctx, `DELETE FROM raw_events WHERE created_at<$1`, rawBefore); e != nil {
-		return e
-	}
-	if aggregateTTL > 0 {
-		before := time.Now().UTC().Add(-aggregateTTL)
-		if _, e := s.Pool.Exec(ctx, `DELETE FROM tracking_hits WHERE occurred_at<$1`, before); e != nil {
-			return e
-		}
-		if _, e := s.Pool.Exec(ctx, `DELETE FROM sessions WHERE last_seen_at<$1`, before); e != nil {
-			return e
-		}
-		if _, e := s.Pool.Exec(ctx, `DELETE FROM visitors v WHERE v.last_seen_at<$1 AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.visitor_id=v.id)`, before); e != nil {
-			return e
-		}
-	}
-	_, e := s.Pool.Exec(ctx, `DELETE FROM admin_sessions WHERE expires_at<now()`)
+	_, e := s.Pool.Exec(ctx, `UPDATE integration_outbox SET status='RETRY',lease=NULL,locked_at=NULL,next_attempt_at=now(),last_error='worker lock expired' WHERE status='SENDING' AND locked_at<now()-interval '5 minutes'`)
 	return e
 }
 func (s *Store) OutboxCounts(ctx context.Context) (map[string]int64, error) {
@@ -137,4 +122,18 @@ func (s *Store) AssertProjectSession(ctx context.Context, projectID, sessionID s
 		return fmt.Errorf("session not found")
 	}
 	return nil
+}
+
+// EnsureIntegration imports initial settings only; UI changes survive restarts.
+func (s *Store) EnsureIntegration(ctx context.Context, projectID, provider string, cfg any, secret []byte) error {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	id, err := UUID()
+	if err != nil {
+		return err
+	}
+	_, err = s.Pool.Exec(ctx, `INSERT INTO integrations(id,project_id,provider,enabled,config,secret_encrypted) VALUES($1,$2,$3,true,$4,$5) ON CONFLICT(project_id,provider) DO NOTHING`, id, projectID, provider, raw, secret)
+	return err
 }

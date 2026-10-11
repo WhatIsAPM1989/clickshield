@@ -1,6 +1,11 @@
-(() => {
+import {$, esc, fmtInt} from "./analytics-common.js";
+import {state} from "./analytics-state.js";
+import {toast, api} from "./analytics-api.js";
+import {baseQuery} from "./analytics-filters.js";
+import {chartScale} from "./analytics-chart.js";
+import {projectPicker} from "./analytics-project-picker.js";
+
  'use strict';
- // Uses state, api, baseQuery, esc and fmtInt from analytics.js.
  const el=id=>document.getElementById(id);
  let request=0,items=[],editingKind='',editingProject='',chartRequest=0;
  const mutate=(path,method,body)=>api(path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':state.csrf},body:body?JSON.stringify(body):undefined});
@@ -34,7 +39,7 @@
    for(const b of root.querySelectorAll('[data-edit]'))b.onclick=()=>openTool(items.find(v=>v.id===b.dataset.edit));
    for(const b of root.querySelectorAll('[data-delete]'))b.onclick=async()=>{
     if(b.dataset.armed!=='1'){const label=b.textContent;b.dataset.armed='1';b.textContent='Точно?';b.classList.add('rp-danger');setTimeout(()=>{if(b.isConnected){b.dataset.armed='';b.textContent=label;b.classList.remove('rp-danger')}},4000);return}
-    try{await mutate(path(pid,kind)+'/'+b.dataset.delete,'DELETE');await loadTools();window.ClickShieldChartAnnotations()}catch(e){status(e.message)}
+    try{await mutate(path(pid,kind)+'/'+b.dataset.delete,'DELETE');await loadTools();chartAnnotations()}catch(e){status(e.message)}
    };
   }catch(e){if(n===request){root.classList.remove('loading');status('Не загружено: '+e.message)}}
  }
@@ -55,20 +60,20 @@
   }
   el('tool-dialog').showModal();
  }
- el('tool-form').onsubmit=async e=>{e.preventDefault();try{const id=el('tool-id').value,body=editingKind==='annotations'?{at:new Date(el('tool-at').value).toISOString(),text:el('tool-text').value}:editingKind==='keys'?{name:el('tool-name').value,days:Number(el('tool-days').value)}:editingKind==='links'?{name:el('tool-name').value,destination:el('tool-destination').value,slug:el('tool-slug').value,enabled:el('tool-enabled').checked}:{name:el('tool-name').value,enabled:el('tool-enabled').checked};const r=await mutate(path(editingProject,editingKind)+(id?'/'+id:''),id?'PUT':'POST',body);el('tool-dialog').close();if(editingKind==='keys'){el('new-key-token').value=r.token;el('key-result').hidden=false}await loadTools();window.ClickShieldChartAnnotations()}catch(e){el('tool-error').textContent=e.message}};
+ el('tool-form').onsubmit=async e=>{e.preventDefault();try{const id=el('tool-id').value,body=editingKind==='annotations'?{at:new Date(el('tool-at').value).toISOString(),text:el('tool-text').value}:editingKind==='keys'?{name:el('tool-name').value,days:Number(el('tool-days').value)}:editingKind==='links'?{name:el('tool-name').value,destination:el('tool-destination').value,slug:el('tool-slug').value,enabled:el('tool-enabled').checked}:{name:el('tool-name').value,enabled:el('tool-enabled').checked};const r=await mutate(path(editingProject,editingKind)+(id?'/'+id:''),id?'PUT':'POST',body);el('tool-dialog').close();if(editingKind==='keys'){el('new-key-token').value=r.token;el('key-result').hidden=false}await loadTools();chartAnnotations()}catch(e){el('tool-error').textContent=e.message}};
  el('load-tools').onclick=loadTools;el('tool-kind').onchange=()=>{el('new-key-token').value='';el('key-result').hidden=true;loadTools()};el('new-tool').onclick=()=>openTool();el('close-tool').onclick=()=>el('tool-dialog').close();el('hide-key').onclick=()=>{el('new-key-token').value='';el('key-result').hidden=true};
  el('copy-key').onclick=async()=>{try{await navigator.clipboard.writeText(el('new-key-token').value);toast('Ключ скопирован')}catch{el('new-key-token').select();status('Скопируйте выделенный ключ.')}};
  document.addEventListener('clickshield:filters',()=>{++request;el('tools-result').replaceChildren();status('');el('key-result').hidden=true;el('new-key-token').value=''});
 
- // Marks annotations on the time chart, using the scale analytics.js publishes for it.
- window.ClickShieldChartAnnotations=async()=>{
+ // Annotations use the scale exported by the chart module.
+ async function chartAnnotations(){
   const n=++chartRequest,pid=el('project-filter').value,chart=el('report-chart');
   chart.querySelectorAll('.chart-annotation-marker').forEach(e=>e.remove());el('chart-annotations')?.replaceChildren();
   if(!pid)return;
   try{
    const r=await api(`/v1/projects/${pid}/tools/annotations?`+baseQuery());if(n!==chartRequest||!r.data.length)return;
    const list=el('chart-annotations');if(list)list.innerHTML=r.data.map(a=>`<span title="${esc(when(a.at))}"><i></i>${esc(new Date(a.at).toLocaleDateString('ru-RU',{day:'numeric',month:'short'}))} — ${esc(a.text)}</span>`).join('');
-   const svg=chart.querySelector('svg'),scale=window.ClickShieldChartScale;if(!svg||!scale)return;
+   const svg=chart.querySelector('svg'),scale=chartScale;if(!svg||!scale)return;
    for(const a of r.data){
     const x=scale.toX(new Date(a.at).getTime());if(x==null)continue;
     const g=document.createElementNS('http://www.w3.org/2000/svg','g');g.classList.add('chart-annotation-marker');
@@ -79,4 +84,5 @@
    }
   }catch{}
  };
-})();
+
+document.addEventListener("clickshield:chart",chartAnnotations);

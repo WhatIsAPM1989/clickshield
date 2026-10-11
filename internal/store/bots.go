@@ -36,7 +36,7 @@ func (s *Store) LabelBots(ctx context.Context) (labeled, requeued int64, err err
 		if len(ids) == 0 {
 			break
 		}
-		tag, e := s.Pool.Exec(ctx, `UPDATE sessions s SET bot_name=v.name,bot_category=v.category FROM unnest($1::uuid[],$2::text[],$3::text[]) AS v(id,name,category) WHERE s.id=v.id`, ids, names, categories)
+		tag, e := s.Pool.Exec(ctx, `UPDATE sessions s SET bot_name=v.name,bot_category=v.category,data_revision=s.data_revision+1 FROM unnest($1::uuid[],$2::text[],$3::text[]) AS v(id,name,category) WHERE s.id=v.id`, ids, names, categories)
 		if e != nil {
 			return labeled, 0, e
 		}
@@ -132,7 +132,7 @@ func (s *Store) FillNetworks(ctx context.Context) (filled, requeued int64, err e
 		if len(ids) == 0 {
 			continue
 		}
-		tag, e := s.Pool.Exec(ctx, `UPDATE sessions s SET asn=v.asn,as_org=left(v.org,160) FROM unnest($1::uuid[],$2::text[],$3::text[]) AS v(id,asn,org) WHERE s.id=v.id`, ids, numbers, orgs)
+		tag, e := s.Pool.Exec(ctx, `UPDATE sessions s SET asn=v.asn,as_org=left(v.org,160),data_revision=s.data_revision+1 FROM unnest($1::uuid[],$2::text[],$3::text[]) AS v(id,asn,org) WHERE s.id=v.id`, ids, numbers, orgs)
 		if e != nil {
 			return filled, 0, e
 		}

@@ -14,13 +14,13 @@
 | `DATABASE_URL` | PostgreSQL DSN | обязательно |
 | `POSTGRES_PASSWORD` | пароль PostgreSQL в Docker Compose | обязательно |
 | `ADMIN_USERNAME` | логин администратора | `admin` |
-| `ADMIN_PASSWORD` | пароль, минимум 12 символов | обязательно |
+| `ADMIN_PASSWORD` | пароль bootstrap, минимум 12 символов | обязательно для bootstrap |
 | `SESSION_SECRET` | HMAC-ключ серверных admin-сессий, минимум 32 байта | обязательно |
 | `ENCRYPTION_KEY` | base64 от 32 байт для AES-GCM | обязательно |
 | `COOKIE_SECURE` | cookie только по HTTPS | `false` в dev |
 | `TRUST_PROXY_HEADERS` | доверять `CF-Connecting-IP` / `X-Forwarded-For` | `false` |
 | `BOOTSTRAP_PROJECT_NAME` | имя первого проекта | `Demo site` |
-| `BOOTSTRAP_PROJECT_KEY` | публичный ключ первого проекта | генерируется, если пусто |
+| `BOOTSTRAP_PROJECT_KEY` | постоянный публичный ключ первого проекта | обязательно для bootstrap |
 | `BOOTSTRAP_ALLOWED_ORIGINS` | разрешённые origins через запятую | пусто |
 | `YANDEX_COUNTER_ID` | bootstrap Yandex integration | пусто |
 | `YANDEX_MEASUREMENT_TOKEN` | bootstrap Yandex secret | пусто |
@@ -36,16 +36,35 @@
 | `MCP_ENABLED` | включить read-only endpoint `/mcp` | `false` |
 | `ASN_DATABASE` | база IP→ASN в формате iptoasn (`.tsv.gz`) | `/app/ip2asn.tsv.gz` |
 
-`TRUST_PROXY_HEADERS=true` допустим только за доверенным proxy/CDN, который очищает входящие заголовки. ASN берётся из `X-GeoIP-ASN`/`CF-ASN`, организация — из `X-GeoIP-Organization`. Если proxy их не передаёт, ASN и организация определяются по базе [iptoasn.com](https://iptoasn.com) (public domain). Docker-образ скачивает её при каждой сборке. При старте сервер дозаполняет ASN у старых сессий и отправляет на пересчёт свежие сессии из сетей облаков и хостингов.
+`TRUST_PROXY_HEADERS=true` допустим только за доверенным proxy/CDN, который очищает входящие заголовки. ASN берётся из `X-GeoIP-ASN`/`CF-ASN`, организация — из `X-GeoIP-Organization`. Если proxy их не передаёт, ASN и организация определяются по базе [iptoasn.com](https://iptoasn.com) (public domain). Docker-образ скачивает её при каждой сборке. Дозаполнение старых сессий выполняется явно через `clickshield backfill networks`; `serve` только загружает файл справочника.
 
 `AGGREGATE_TTL=0` отключает удаление агрегатов. Сроки задаются в формате Go duration
 (`168h`, а не `7d`). `RAW_EVENTS_TTL` — минимум `1h`, `STALE_SESSION_AFTER` —
 минимум `1m`, `FINISH_GRACE` и `AGGREGATE_TTL` не могут быть отрицательными.
-Рабочий цикл фоновых задач фиксирован: 5 секунд.
+Scoring запускается worker каждые 5 секунд, доставка — каждые 2 секунды,
+проекции — каждую секунду, порционная очистка — каждую минуту.
 
-При старте `ADMIN_USERNAME`/`ADMIN_PASSWORD` создают или обновляют администратора.
-Изменение пароля в окружении обновляет bcrypt-хеш и завершает его прежние сессии.
-Bootstrap-настройки проекта применяются только при создании: существующий проект
-с тем же публичным ключом сохраняет имя, origins и scoring. Меняйте их в панели.
-Пустой ключ при прямом запуске бинарника генерирует новый проект при каждом старте;
-Compose требует постоянный ключ. Секреты интеграций задавайте только на сервере.
+Команда `bootstrap` создаёт или обновляет администратора. Изменение пароля при
+повторном bootstrap обновляет bcrypt-хеш и завершает прежние admin-сессии.
+`serve` и `worker` администратора не изменяют. Bootstrap создаёт проект и
+интеграции только при отсутствии; последующие изменения через панель сохраняются.
+
+`migrate` и `backfill` требуют только `DATABASE_URL` (для replay также S3).
+`serve`/`worker` требуют `SESSION_SECRET` и `ENCRYPTION_KEY`; секреты администратора
+нужны только `bootstrap`. `rescore` и `reproduce` требуют `SESSION_SECRET`.
+
+## Replay в S3
+
+| Переменная | Назначение |
+|---|---|
+| `REPLAY_S3_ENDPOINT` | origin S3 без пути, например `https://s3.example.com` |
+| `REPLAY_S3_BUCKET` | закрытый bucket для записей |
+| `REPLAY_S3_ACCESS_KEY` | серверный ключ доступа |
+| `REPLAY_S3_SECRET_KEY` | серверный секрет |
+| `REPLAY_S3_REGION` | регион, по умолчанию `us-east-1` |
+
+Если endpoint задан, bucket и оба ключа обязательны. Без S3 нельзя включить новую
+запись; tracker получает `replay_enabled=false`. Bootstrap создаёт bucket, если
+его ещё нет. Для заранее созданного bucket это разрешение не требуется.
+Используйте адрес, доступный из контейнеров; `localhost` внутри app означает сам
+контейнер. Браузер обращается только к ClickShield, доступ к S3 ему не выдаётся.

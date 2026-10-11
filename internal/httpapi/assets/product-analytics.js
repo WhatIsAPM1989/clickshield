@@ -1,6 +1,10 @@
-(() => {
+import {$, esc, SEQUENTIAL, fmtInt, parseDate, ruDate} from "./analytics-common.js";
+import {state} from "./analytics-state.js";
+import {api} from "./analytics-api.js";
+import {baseQuery, switchReport} from "./analytics-filters.js";
+import {projectPicker} from "./analytics-project-picker.js";
+
  'use strict';
- // Uses state, api, baseQuery, esc, fmtInt, SEQUENTIAL and the period helpers from analytics.js.
  const el=id=>document.getElementById(id);
  let request=0,lastDefinitions=[],definitionProject='',journeyFilter='';
  const pct=(n,d)=>d?(100*n/d).toLocaleString('ru-RU',{maximumFractionDigits:1})+' %':'0 %';
@@ -130,4 +134,3 @@
  el('definition-form').onsubmit=async e=>{e.preventDefault();try{const id=el('definition-id').value,steps=[...el('definition-steps').children].map(row=>({type:row.querySelector('.step-type').value,value:row.querySelector('.step-value').value,match:row.querySelector('.step-match').value,properties:JSON.parse(row.querySelector('.step-properties').value||'{}')}));const kind=el('definition-kind').value;await mutate(`/v1/projects/${definitionProject}/definitions${id?'/'+id:''}`,id?'PUT':'POST',{name:el('definition-name').value,kind,steps,window_minutes:Number(el('definition-window').value)});el('definition-dialog').close();const target=kind==='goal'?'goals':'funnels';if(state.report!==target)switchReport(target);else await load()}catch(e){el('definition-error').textContent=e instanceof SyntaxError?'Параметры события должны быть JSON-объектом, например {"plan":"pro"}':e.message}};
  el('new-definition').onclick=()=>openDefinition();el('close-definition').onclick=()=>el('definition-dialog').close();el('add-definition-step').onclick=()=>{if(el('definition-steps').children.length<12)addStep()};el('load-product').onclick=()=>load();el('product-kind').onchange=()=>load();
  document.addEventListener('clickshield:filters',()=>{++request;el('product-result').replaceChildren();status('')});
-})();

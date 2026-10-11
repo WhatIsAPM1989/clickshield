@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"github.com/lamooof/clickshield/internal/analytics"
 	"github.com/lamooof/clickshield/internal/store"
 	"net/http"
 	"time"
@@ -12,7 +13,7 @@ func (s *Server) aggregateReport(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = "sources"
 	}
-	if !store.ValidReport(kind) {
+	if !analytics.ValidReport(kind) {
 		writeError(w, 400, "unknown report")
 		return
 	}
@@ -30,7 +31,7 @@ func (s *Server) aggregateReport(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	data, e := s.store.AggregateReport(ctx, kind, zone, f)
+	data, e := s.analytics.Report(ctx, analytics.Query{Report: kind, Timezone: zone, Filter: f})
 	if e != nil {
 		s.log.Error("aggregate report", "error", e)
 		writeError(w, 500, "could not load report")
@@ -45,7 +46,7 @@ func (s *Server) reportTimeline(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = "sources"
 	}
-	if !store.ValidReport(kind) || !store.ValidInterval(interval) {
+	if !analytics.ValidReport(kind) || !analytics.ValidInterval(interval) {
 		writeError(w, 400, "unknown report or interval")
 		return
 	}
@@ -66,20 +67,20 @@ func (s *Server) reportTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	series := q["series"]
-	if len(series) > 10 {
-		writeError(w, 400, "at most 10 series")
+	if len(series) > 20 {
+		writeError(w, 400, "at most 20 series")
 		return
 	}
 	for i := range series {
 		series[i] = truncate(series[i], 2048)
 	}
-	if _, e := store.TimelineBuckets(interval, *f.From, *f.To, time.UTC); e != nil {
+	if _, e := analytics.TimelineBuckets(interval, *f.From, *f.To, time.UTC); e != nil {
 		writeError(w, 422, "too many points for this interval")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	data, e := s.store.ReportTimeline(ctx, kind, interval, zone, series, q.Get("total_only") == "true", f)
+	data, e := s.analytics.ReportTimeline(ctx, kind, interval, zone, series, q.Get("total_only") == "true", f)
 	if e != nil {
 		s.log.Error("report timeline", "error", e)
 		writeError(w, 500, "could not load timeline")
@@ -93,7 +94,7 @@ func (s *Server) trafficReport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, e := s.store.TrafficReport(r.Context(), f)
+	items, e := s.analytics.TrafficReport(r.Context(), f)
 	if e != nil {
 		s.log.Error("traffic report", "error", e)
 		writeError(w, 500, "could not load traffic report")
@@ -120,6 +121,10 @@ func (s *Server) replaySettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "sample rate must be 0–100 and retention 1–30 days")
 		return
 	}
+	if req.Enabled && !s.replay.Configured() {
+		writeError(w, 503, "configure REPLAY_S3_* before enabling replay")
+		return
+	}
 	if e := s.store.UpdateReplaySettings(r.Context(), id, req.Enabled, req.SampleRate, req.RetentionDays); e != nil {
 		writeError(w, 404, "project not found")
 		return
@@ -139,5 +144,5 @@ func (s *Server) trackerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, 200, map[string]any{"replay_enabled": p.ReplayEnabled, "replay_sample_rate": p.ReplaySampleRate, "max_chunk_bytes": 128 << 10})
+	writeJSON(w, 200, map[string]any{"replay_enabled": p.ReplayEnabled && s.replay.Configured(), "replay_sample_rate": p.ReplaySampleRate, "max_chunk_bytes": 128 << 10})
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"github.com/lamooof/clickshield/internal/analytics"
 	"os"
 	"testing"
 	"time"
@@ -50,42 +51,42 @@ func TestProductAnalyticsLifecycle(t *testing.T) {
 		t.Fatalf("retry: %+v %v", r, e)
 	}
 	f := SessionFilter{ProjectID: p.ID}
-	events, e := st.BusinessReport(ctx, f)
+	events, e := projectedReports(t, st).BusinessReport(ctx, f)
 	if e != nil || len(events) != 1 || events[0].Events != 1 || events[0].Visitors != 1 {
 		t.Fatalf("events: %+v %v", events, e)
 	}
-	props, e := st.EventProperties(ctx, "call", f)
+	props, e := projectedReports(t, st).EventProperties(ctx, "call", f)
 	if e != nil || len(props) != 2 {
 		t.Fatalf("properties: %+v %v", props, e)
 	}
 	d := AnalyticsDefinition{ProjectID: p.ID, Kind: "funnel", Name: "Call", WindowMinutes: 60, Steps: []AnalyticsStep{{Type: "page", Value: "/start"}, {Type: "event", Value: "call", Properties: map[string]any{"plan": "pro"}}, {Type: "page", Value: "/thanks"}}}
-	d, e = st.SaveDefinition(ctx, d)
+	d, e = projectedReports(t, st).SaveDefinition(ctx, d)
 	if e != nil {
 		t.Fatal(e)
 	}
-	report, e := st.FunnelReport(ctx, d, f)
+	report, e := projectedReports(t, st).FunnelReport(ctx, d, f)
 	if e != nil || report.EligibleVisits != 1 || report.Counts[2] != 1 {
 		t.Fatalf("funnel: %+v %v", report, e)
 	}
 	other, _ := UUID()
-	if e = st.DeleteDefinition(ctx, other, d.ID); e != ErrNotFound {
+	if e = projectedReports(t, st).DeleteDefinition(ctx, other, d.ID); e != analytics.ErrNotFound {
 		t.Fatalf("cross-project delete: %v", e)
 	}
 	d.ProjectID = other
-	if _, e = st.SaveDefinition(ctx, d); e != ErrNotFound {
+	if _, e = projectedReports(t, st).SaveDefinition(ctx, d); e != analytics.ErrNotFound {
 		t.Fatalf("cross-project update: %v", e)
 	}
 	d.ProjectID = p.ID
-	edges, e := st.Journey(ctx, f)
+	edges, e := projectedReports(t, st).Journey(ctx, f)
 	if e != nil || len(edges) != 3 {
 		t.Fatalf("journey: %+v %v", edges, e)
 	}
-	heat, e := st.Heatmap(ctx, f, "", 0)
+	heat, e := projectedReports(t, st).Heatmap(ctx, f, "", 0)
 	if e != nil || heat.Visits != 1 || len(heat.Clicks) != 1 || heat.Clicks[0].X != 10 || heat.Clicks[0].Y != 25 || heat.Clicks[0].Count != 1 || heat.Scroll[8].Visits != 1 || heat.Scroll[9].Visits != 0 {
 		t.Fatalf("heatmap: %+v %v", heat, e)
 	}
 	for _, kind := range []string{"geo", "languages", "browsers"} {
-		r, e := st.AggregateReport(ctx, kind, "UTC", f)
+		r, e := projectedReports(t, st).AggregateReport(ctx, kind, "UTC", f)
 		if e != nil || len(r.Rows) < 1 || r.Totals.Visits != 1 {
 			t.Fatalf("audience %s: %+v %v", kind, r, e)
 		}
@@ -104,22 +105,22 @@ func TestProductAnalyticsLifecycle(t *testing.T) {
 	if _, e = st.Pool.Exec(ctx, `UPDATE sessions SET started_at=$2,last_seen_at=$2 WHERE id=$1`, b.SessionID, first.Add(time.Hour)); e != nil {
 		t.Fatal(e)
 	}
-	cells, e := st.Retention(ctx, f, "UTC")
+	cells, e := projectedReports(t, st).Retention(ctx, f, "UTC")
 	if e != nil || len(cells) != 31 || cells[0].Visitors != 1 || cells[1].Returned != 1 {
 		t.Fatalf("retention: %+v %v", cells, e)
 	}
 	if _, e = st.Pool.Exec(ctx, `DELETE FROM raw_events WHERE project_id=$1`, p.ID); e != nil {
 		t.Fatal(e)
 	}
-	events, e = st.BusinessReport(ctx, f)
+	events, e = projectedReports(t, st).BusinessReport(ctx, f)
 	if e != nil || events[0].Events != 1 {
 		t.Fatalf("business history removed with raw data: %+v %v", events, e)
 	}
-	report, e = st.FunnelReport(ctx, d, f)
+	report, e = projectedReports(t, st).FunnelReport(ctx, d, f)
 	if e != nil || report.Counts[2] != 1 {
 		t.Fatalf("funnel after raw deletion: %+v %v", report, e)
 	}
-	if e = st.DeleteDefinition(ctx, p.ID, d.ID); e != nil {
+	if e = projectedReports(t, st).DeleteDefinition(ctx, p.ID, d.ID); e != nil {
 		t.Fatal(e)
 	}
 }

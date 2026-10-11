@@ -84,7 +84,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			meta.ASN, meta.ASOrg = strconv.FormatUint(uint64(info.Number), 10), truncate(info.Org, 160)
 		}
 	}
-	result, e := s.store.Ingest(r.Context(), p, b, meta)
+	result, e := s.service.Ingest(r.Context(), p, b, meta)
 	if e != nil {
 		s.log.Error("ingest", "error", e)
 		writeError(w, 500, "could not store events")

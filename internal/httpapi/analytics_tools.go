@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"github.com/lamooof/clickshield/internal/analytics"
 	"net/http"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ func (s *Server) bearerProject(w http.ResponseWriter, r *http.Request) (string, 
 		writeError(w, 429, "rate limit exceeded")
 		return "", false
 	}
-	pid, e := s.store.AnalyticsKey(r.Context(), strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")))
+	pid, e := s.analytics.Repository.AnalyticsKey(r.Context(), strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")))
 	if e != nil {
 		writeError(w, 401, "invalid, expired or revoked API key")
 		return "", false
@@ -74,7 +75,7 @@ func (s *Server) analyticsKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" {
-		keys, e := s.store.AnalyticsKeys(r.Context(), pid)
+		keys, e := s.analytics.Repository.AnalyticsKeys(r.Context(), pid)
 		if e != nil {
 			writeError(w, 500, "could not load keys")
 			return
@@ -93,7 +94,11 @@ func (s *Server) analyticsKeys(w http.ResponseWriter, r *http.Request) {
 	if req.Days == 0 {
 		req.Days = 90
 	}
-	k, token, e := s.store.CreateAnalyticsKey(r.Context(), pid, req.Name, req.Days)
+	if _, err := s.store.Project(r.Context(), pid); err != nil {
+		writeError(w, 404, "project not found")
+		return
+	}
+	k, token, e := s.analytics.Repository.CreateAnalyticsKey(r.Context(), pid, req.Name, req.Days)
 	if e != nil {
 		writeError(w, 422, "name and lifetime 1–365 days required")
 		return
@@ -109,7 +114,7 @@ func (s *Server) revokeAnalyticsKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid id")
 		return
 	}
-	if e := s.store.RevokeAnalyticsKey(r.Context(), pid, id); e != nil {
+	if e := s.analytics.Repository.RevokeAnalyticsKey(r.Context(), pid, id); e != nil {
 		toolError(w, e)
 		return
 	}
@@ -120,7 +125,7 @@ func (s *Server) revokeAnalyticsKey(w http.ResponseWriter, r *http.Request) {
 func toolError(w http.ResponseWriter, e error) {
 	var p *pgconn.PgError
 	switch {
-	case errors.Is(e, store.ErrNotFound), store.IsNotFound(e):
+	case errors.Is(e, analytics.ErrNotFound), store.IsNotFound(e):
 		writeError(w, 404, "not found")
 	case errors.As(e, &p) && p.Code == "23505":
 		writeError(w, 409, "slug already exists")
@@ -140,6 +145,12 @@ func (s *Server) analyticsTools(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "unknown tool")
 		return
 	}
+	if r.Method != "GET" {
+		if _, err := s.store.Project(r.Context(), pid); err != nil {
+			writeError(w, 404, "project not found")
+			return
+		}
+	}
 	var result any
 	var err error
 	if r.Method == "GET" {
@@ -147,46 +158,40 @@ func (s *Server) analyticsTools(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		switch kind {
-		case "links":
-			result, err = s.store.Links(r.Context(), pid, f.From, f.To)
-		case "pixels":
-			result, err = s.store.Pixels(r.Context(), pid, f.From, f.To)
-		case "annotations":
-			result, err = s.store.Annotations(r.Context(), pid, f.From, f.To)
-		}
+		f.ProjectID = pid
+		result, err = s.analytics.Report(r.Context(), analytics.Query{Report: kind, Filter: f})
 	} else if r.Method == "DELETE" {
-		err = s.store.DeleteAnalyticsTool(r.Context(), pid, id, kind)
+		err = s.analytics.Repository.DeleteAnalyticsTool(r.Context(), pid, id, kind)
 		result = map[string]any{"ok": true}
 	} else {
 		switch kind {
 		case "links":
-			var l store.TrackedLink
+			var l analytics.TrackedLink
 			if e := readJSON(w, r, &l, 8192); e != nil {
 				writeError(w, 400, "invalid link")
 				return
 			}
 			l.ProjectID = pid
 			l.ID = id
-			result, err = s.store.SaveLink(r.Context(), l)
+			result, err = s.analytics.Repository.SaveLink(r.Context(), l)
 		case "pixels":
-			var p store.TrackingPixel
+			var p analytics.TrackingPixel
 			if e := readJSON(w, r, &p, 4096); e != nil {
 				writeError(w, 400, "invalid pixel")
 				return
 			}
 			p.ProjectID = pid
 			p.ID = id
-			result, err = s.store.SavePixel(r.Context(), p)
+			result, err = s.analytics.Repository.SavePixel(r.Context(), p)
 		case "annotations":
-			var a store.Annotation
+			var a analytics.Annotation
 			if e := readJSON(w, r, &a, 8192); e != nil {
 				writeError(w, 400, "invalid annotation")
 				return
 			}
 			a.ProjectID = pid
 			a.ID = id
-			result, err = s.store.SaveAnnotation(r.Context(), a)
+			result, err = s.analytics.Repository.SaveAnnotation(r.Context(), a)
 		}
 	}
 	if err != nil {
@@ -214,7 +219,7 @@ func (s *Server) shortLink(w http.ResponseWriter, r *http.Request) {
 	// HEAD previews do not count; GET requests, including mail/link scanners, do.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	destination, e := s.store.HitLink(ctx, r.PathValue("slug"), truncate(r.UserAgent(), 512), sanitizeURL(r.Referer()), s.trackingCountry(r), r.Method != "HEAD")
+	destination, e := s.analytics.Repository.HitLink(ctx, r.PathValue("slug"), truncate(r.UserAgent(), 512), sanitizeURL(r.Referer()), s.trackingCountry(r), r.Method != "HEAD")
 	if e != nil {
 		http.NotFound(w, r)
 		return
@@ -238,7 +243,7 @@ func (s *Server) pixel(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if e := s.store.HitPixel(ctx, id, truncate(r.UserAgent(), 512), sanitizeURL(r.Referer()), s.trackingCountry(r)); e != nil {
+	if e := s.analytics.Repository.HitPixel(ctx, id, truncate(r.UserAgent(), 512), sanitizeURL(r.Referer()), s.trackingCountry(r)); e != nil {
 		http.NotFound(w, r)
 		return
 	}
