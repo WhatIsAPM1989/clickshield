@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clickshield
+      POSTGRES_USER: clickshield
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - clickshield_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clickshield -d clickshield"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    image: ${CLICKSHIELD_IMAGE:-clickshield:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18088:8080"
+    environment:
+      MCP_ENABLED: "${MCP_ENABLED:-false}"
+      GEOIP_CITY_DATABASE: "${GEOIP_CITY_DATABASE:-}"
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://clickshield:${POSTGRES_PASSWORD}@postgres:5432/clickshield?sslmode=disable
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+      COOKIE_SECURE: "true"
+      TRUST_PROXY_HEADERS: "true"
+      OUTCOME_API_TOKEN: ${OUTCOME_API_TOKEN:?set OUTCOME_API_TOKEN}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      BOOTSTRAP_PROJECT_NAME: ${BOOTSTRAP_PROJECT_NAME:-My site}
+      BOOTSTRAP_PROJECT_KEY: ${BOOTSTRAP_PROJECT_KEY:?set BOOTSTRAP_PROJECT_KEY}
+      BOOTSTRAP_ALLOWED_ORIGINS: ${BOOTSTRAP_ALLOWED_ORIGINS:?set BOOTSTRAP_ALLOWED_ORIGINS}
+      YANDEX_COUNTER_ID: ${YANDEX_COUNTER_ID:-}
+      YANDEX_MEASUREMENT_TOKEN: ${YANDEX_MEASUREMENT_TOKEN:-}
+      GOOGLE_MEASUREMENT_ID: ${GOOGLE_MEASUREMENT_ID:-}
+      GOOGLE_API_SECRET: ${GOOGLE_API_SECRET:-}
+      RAW_EVENTS_TTL: ${RAW_EVENTS_TTL:-168h}
+      AGGREGATE_TTL: ${AGGREGATE_TTL:-4320h}
+      STALE_SESSION_AFTER: ${STALE_SESSION_AFTER:-30m}
+      FINISH_GRACE: ${FINISH_GRACE:-20s}
+      ASN_DATABASE: "${ASN_DATABASE:-/app/ip2asn.tsv.gz}"
+volumes:
+  clickshield_pgdata:

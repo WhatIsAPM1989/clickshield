@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: clickshield_test
+          POSTGRES_USER: clickshield_test
+          POSTGRES_PASSWORD: ci-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clickshield_test -d clickshield_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      CLICKSHIELD_TEST_DATABASE_URL: postgres://clickshield_test:ci-test-only@localhost:5432/clickshield_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: go mod verify
+      - run: make check
+      - run: make build
+      - name: Verify embedded replay bundles
+        run: |
+          npm run vendor
+          git diff --exit-code -- internal/httpapi/assets/rrweb-record.js internal/httpapi/assets/rrweb-replay.js internal/httpapi/assets/rrweb-replay.css
+      - name: Validate Compose examples
+        env:
+          POSTGRES_PASSWORD: ci-test-only
+          ADMIN_PASSWORD: ci-admin-test-only
+          SESSION_SECRET: ci-session-secret-at-least-32-bytes
+          ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef'
+          BOOTSTRAP_PROJECT_KEY: pk_ci_test
+          BOOTSTRAP_ALLOWED_ORIGINS: https://example.test
+          OUTCOME_API_TOKEN: ci-outcome-test-only
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.prod.yml config --quiet

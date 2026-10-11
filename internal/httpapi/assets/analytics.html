@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Аналитика — ClickShield</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/styles.css?v=9">
+  <link rel="stylesheet" href="/assets/reports.css?v=3">
+</head>
+<body class="analytics-page">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark small">CS</span><strong>ClickShield</strong></div>
+    <nav><a href="/" class="nav">Сессии</a><a href="/analytics" class="nav active" aria-current="page">Аналитика</a><a href="/#projects" class="nav">Проекты</a></nav>
+    <div class="user"><span id="username"></span><button id="logout" class="ghost">Выйти</button></div>
+  </header>
+  <div class="rp-layout">
+    <aside class="rp-sidebar" aria-label="Отчёты">
+      <label class="rp-catalog-select">Отчёт<select id="report-select"></select></label>
+      <nav id="report-catalog" class="rp-catalog"></nav>
+    </aside>
+    <main class="rp-main">
+      <div class="rp-head">
+        <div class="rp-title">
+          <h1 id="report-title">Отчёт</h1>
+          <p id="report-description" class="muted"></p>
+        </div>
+        <div class="rp-head-actions">
+          <button id="copy-link" type="button" class="rp-button">Скопировать ссылку</button>
+          <button id="export-report" type="button" class="rp-button" disabled>CSV</button>
+        </div>
+      </div>
+
+      <form id="report-filters" class="rp-filters" autocomplete="off">
+        <div class="rp-filter-row">
+          <div class="rp-segmented" id="period-presets" role="group" aria-label="Период">
+            <button type="button" data-period="today">Сегодня</button>
+            <button type="button" data-period="yesterday">Вчера</button>
+            <button type="button" data-period="7">Неделя</button>
+            <button type="button" data-period="30">Месяц</button>
+            <button type="button" data-period="90">Квартал</button>
+            <button type="button" data-period="365">Год</button>
+          </div>
+          <div class="rp-dates">
+            <input id="date-from" type="date" required aria-label="Начало периода">
+            <span aria-hidden="true">—</span>
+            <input id="date-to" type="date" required aria-label="Конец периода">
+          </div>
+          <label class="rp-inline" id="interval-control">Детализация
+            <select id="interval">
+              <option value="auto">авто</option><option value="hour">по часам</option><option value="day">по дням</option><option value="week">по неделям</option><option value="month">по месяцам</option>
+            </select>
+          </label>
+          <label class="rp-switch" id="compare-control"><input id="compare" type="checkbox"><span>Сравнить с прошлым периодом</span></label>
+        </div>
+        <div class="rp-filter-row">
+          <label class="rp-inline">Проект<select id="project-filter"><option value="">Все проекты</option></select></label>
+          <div class="rp-segmented rp-segment" id="segment" role="group" aria-label="Какие визиты учитывать">
+            <button type="button" data-class="">Все визиты</button>
+            <button type="button" data-class="NO_BOTS">Без ботов</button>
+            <button type="button" data-class="HUMAN">Люди</button>
+            <button type="button" data-class="SUSPICIOUS">Подозрительные</button>
+            <button type="button" data-class="BOT">Боты</button>
+          </div>
+          <div id="filter-chips" class="rp-chips" aria-live="polite"></div>
+        </div>
+      </form>
+
+      <p id="report-status" class="rp-status" role="status" aria-live="polite"></p>
+
+      <div id="report-body" class="rp-body">
+        <section id="kpis" class="rp-kpis" aria-label="Итоги периода"></section>
+
+        <section class="panel rp-chart-panel">
+          <div class="rp-chart-head">
+            <div class="rp-chart-controls">
+              <label class="rp-inline">Метрика<select id="chart-metric"></select></label>
+              <div class="rp-segmented rp-small" id="chart-type" role="group" aria-label="Тип графика">
+                <button type="button" data-type="line">Линии</button>
+                <button type="button" data-type="area">С накоплением</button>
+              </div>
+            </div>
+            <p id="chart-hint" class="muted rp-hint"></p>
+          </div>
+          <div id="chart-legend" class="rp-legend"></div>
+          <div id="report-chart" class="rp-chart"></div>
+          <div id="chart-annotations" class="rp-annotations"></div>
+        </section>
+
+        <section id="insights" class="rp-insights" aria-label="Наблюдения"></section>
+
+        <section class="panel rp-table-panel">
+          <div class="rp-table-tools">
+            <input id="table-search" type="search" placeholder="Найти в отчёте" aria-label="Поиск по строкам отчёта">
+            <div id="column-groups" class="rp-column-groups" role="group" aria-label="Группы метрик"></div>
+            <button id="toggle-expand" type="button" class="rp-button rp-small-button">Развернуть всё</button>
+          </div>
+          <div id="report-table" class="rp-table-wrap"></div>
+          <nav class="rp-pagination" aria-label="Страницы отчёта">
+            <span id="report-page-label" class="muted"></span>
+            <div><button id="report-prev" type="button" class="rp-button" disabled>Назад</button><button id="report-next" type="button" class="rp-button" disabled>Вперёд</button></div>
+          </nav>
+        </section>
+        <p class="rp-note muted">Строка открывает сессии и записи посещений этого сегмента; «Фильтр» сужает весь отчёт. Время на сайте — активное время: вкладка на экране и посетитель действует на странице; фоновые вкладки не учитываются, поэтому показатель сопоставим со «временем взаимодействия» в Google Analytics. Отказ — визит из одной страницы меньше чем с 15 секундами активного времени. Посетители в группах считаются уникально, поэтому сумма по строкам может быть больше итога. Конверсия — доля визитов хотя бы с одной заявкой. Источники старых визитов восстановлены по сохранившимся данным.</p>
+      </div>
+
+      <section id="product-panel" class="rp-panel hidden" aria-live="polite">
+        <div class="rp-panel-bar">
+          <p id="product-status" role="status" class="rp-panel-status"></p>
+          <div class="rp-panel-actions">
+            <select id="product-kind" hidden aria-hidden="true"><option value="events"></option><option value="goals"></option><option value="funnels"></option><option value="journey"></option><option value="heatmap"></option><option value="retention"></option></select>
+            <button hidden id="load-product" type="button" class="rp-button">Обновить</button>
+            <button id="new-definition" type="button" class="rp-button rp-primary">Создать цель или воронку</button>
+          </div>
+        </div>
+        <div id="product-result" class="rp-product-result"></div>
+      </section>
+      <dialog id="definition-dialog" class="rp-dialog"><form id="definition-form">
+        <div class="rp-dialog-head"><h2>Цель или воронка</h2><button id="close-definition" type="button" class="rp-icon-button" aria-label="Закрыть">×</button></div>
+        <input id="definition-id" type="hidden">
+        <div class="rp-form-grid">
+          <label>Название<input id="definition-name" maxlength="120" required placeholder="Например, Заявка из каталога"></label>
+          <label>Тип<select id="definition-kind"><option value="goal">Цель — один шаг</option><option value="funnel">Воронка — 2–12 шагов</option></select></label>
+          <label>Минут между шагами<input id="definition-window" type="number" min="1" max="10080" value="60" required></label>
+        </div>
+        <p class="rp-help">Страница — адрес или путь, например /contacts. Событие — имя из ClickShield.track. Заявка — LEAD (любая) или QUALIFIED (качественная). Шаги проходятся по порядку в одном визите.</p>
+        <div id="definition-steps" class="rp-steps"></div>
+        <button id="add-definition-step" type="button" class="rp-button">+ Добавить шаг</button>
+        <p id="definition-error" class="rp-error" role="alert"></p>
+        <div class="rp-dialog-foot"><button type="submit" class="rp-button rp-primary">Сохранить</button></div>
+      </form></dialog>
+
+      <section id="tools-panel" class="rp-panel hidden">
+        <div class="rp-panel-bar">
+          <p id="tools-status" role="status" class="rp-panel-status"></p>
+          <div class="rp-panel-actions">
+            <select id="tool-kind" hidden aria-hidden="true"><option value="links"></option><option value="pixels"></option><option value="annotations"></option><option value="keys"></option></select>
+            <button hidden id="load-tools" type="button" class="rp-button">Обновить</button>
+            <button id="new-tool" type="button" class="rp-button rp-primary">Создать</button>
+          </div>
+        </div>
+        <div id="key-result" class="rp-key-result" hidden>
+          <label>Сохраните ключ — он показывается один раз<textarea id="new-key-token" readonly rows="2"></textarea></label>
+          <div><button id="copy-key" type="button" class="rp-button rp-primary">Скопировать ключ</button><button id="hide-key" type="button" class="rp-button">Скрыть</button></div>
+        </div>
+        <div id="tools-result" class="rp-tools-result"></div>
+        <p class="rp-note muted">MCP-доступ к аналитике: /mcp, включается на сервере переменной MCP_ENABLED=true.</p>
+      </section>
+      <dialog id="tool-dialog" class="rp-dialog"><form id="tool-form">
+        <div class="rp-dialog-head"><h2 id="tool-dialog-title">Инструмент</h2><button id="close-tool" type="button" class="rp-icon-button" aria-label="Закрыть">×</button></div>
+        <input id="tool-id" type="hidden"><div id="tool-fields" class="rp-form-grid rp-form-stack"></div>
+        <p id="tool-error" class="rp-error" role="alert"></p>
+        <div class="rp-dialog-foot"><button type="submit" class="rp-button rp-primary">Сохранить</button></div>
+      </form></dialog>
+
+      <section id="metrika-panel" class="rp-panel hidden">
+        <div class="rp-panel-bar">
+          <p class="rp-panel-status">Нужен OAuth-доступ к счётчику в разделе «Проекты». Используются проект и даты; сегменты ClickShield не применяются. Границы дней — по часовому поясу счётчика.</p>
+          <div class="rp-panel-actions">
+            <label class="rp-inline">Отчёт<select id="metrika-report-kind"><option value="sources">Источники</option><option value="campaigns">Кампании Директа</option><option value="platforms">Площадки Директа</option><option value="utm">UTM</option></select></label>
+            <button id="load-metrika-report" type="button" class="rp-button rp-primary">Загрузить из Метрики</button>
+          </div>
+        </div>
+        <p id="metrika-report-status" class="rp-panel-status">Выберите проект, чтобы загрузить отчёт счётчика.</p>
+        <div id="metrika-report-table" class="rp-tools-result"></div>
+        <nav class="rp-pagination"><span></span><div><button id="metrika-prev" type="button" class="rp-button" disabled>Назад</button><button id="metrika-next" type="button" class="rp-button" disabled>Вперёд</button></div></nav>
+      </section>
+    </main>
+  </div>
+  <div id="chart-tooltip" class="rp-tooltip hidden" role="presentation"></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/assets/analytics.js?v=7"></script>
+<script src="/assets/product-analytics.js?v=4"></script>
+<script src="/assets/analytics-tools.js?v=3"></script>
+</body>
+</html>

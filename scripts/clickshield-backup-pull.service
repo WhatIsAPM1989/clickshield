@@ -1,0 +1,7 @@
+[Unit]
+Description=Pull verified ClickShield backup to local machine
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/clickshield/backup.env
+ExecStart=%h/.local/lib/clickshield/pull_backup.sh

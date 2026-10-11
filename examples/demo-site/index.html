@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClickShield demo site</title><link rel="icon" href="data:,">
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f5f6fa; color: #172033; }
+    main { max-width: 760px; margin: 60px auto; padding: 24px; }
+    section { background: white; border-radius: 16px; padding: 24px; margin-bottom: 24px; box-shadow: 0 8px 35px #17203312; }
+    button { padding: 12px 18px; border: 0; border-radius: 10px; background: #6457ed; color: white; cursor: pointer; }
+    .spacer { height: 110vh; background: linear-gradient(#fff, #eeeaff); }
+    code { word-break: break-all; }
+  </style>
+  <script>
+    // Передайте public project key: http://localhost:8081/?key=pk_...
+    const demoProjectKey = new URLSearchParams(location.search).get('key') || 'pk_replace_with_random_public_key';
+    const tracker = document.createElement('script');
+    tracker.async = true;
+    const demoAPI = new URLSearchParams(location.search).get('api') || 'http://localhost:8080';
+    tracker.src = `${demoAPI}/tracker.js?key=${encodeURIComponent(demoProjectKey)}`;
+    document.head.appendChild(tracker);
+  </script>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>Тестовый сайт ClickShield</h1>
+      <p>Двигайте мышью, прокручивайте страницу и нажимайте кнопку. Сессия появится в панели после завершения/таймаута.</p>
+      <label>Контакт для проверки маскирования<input id="privacy-input" type="text" value="PRIVATE_INITIAL_8765"></label>
+      <p data-cs-private>PRIVATE_BLOCK_8765</p>
+      <a href="/" id="next-page">Следующая страница</a>
+      <button id="action" data-cs-event="demo_click" data-cs-prop-placement="demo">Тестовый клик</button>
+      <p>Решение: <strong id="decision">MONITOR</strong></p>
+      <p>Session ID: <code id="session">загружается…</code></p>
+    </section>
+    <section class="spacer"><h2>Область для теста scroll</h2></section>
+  </main>
+  <script>
+    document.getElementById('next-page').href='/?key='+encodeURIComponent(demoProjectKey)+'&api='+encodeURIComponent(demoAPI);
+    document.getElementById('action').addEventListener('click', () => {
+      document.getElementById('action').textContent = 'Клик зафиксирован';
+    });
+    window.addEventListener('antifraud:decision', (event) => {
+      document.getElementById('decision').textContent = event.detail.decision;
+    });
+    setTimeout(() => {
+      document.getElementById('session').textContent = window.ClickShield?.sessionId || 'tracker не подключён';
+    }, 1000);
+  </script>
+</body>
+</html>

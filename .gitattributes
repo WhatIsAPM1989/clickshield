@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.mmdb binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.gz binary
+
+internal/httpapi/assets/rrweb-record.js linguist-vendored
+internal/httpapi/assets/rrweb-replay.js linguist-vendored
+internal/httpapi/assets/rrweb-replay.css linguist-vendored

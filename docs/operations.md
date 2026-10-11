@@ -1,0 +1,132 @@
+# Развёртывание и эксплуатация
+
+[Документация](README.md) · [Конфигурация](configuration.md) · [Чек-лист](validation.md)
+
+## Production-запуск
+
+Нужны Docker Compose v2 и HTTPS reverse proxy. Репозиторий содержит переносимый
+`docker-compose.prod.yml`; локальные `deploy.py` и `deploy_site_tracker.py`
+игнорируются Git и для запуска не нужны.
+
+```bash
+cp .env.example .env.production
+chmod 600 .env.production
+# Заполните секреты, имя/ключ проекта и точные HTTPS origins своего сайта.
+# COOKIE_SECURE/TRUST_PROXY_HEADERS в production Compose принудительно true.
+docker build -t clickshield:YOUR_RELEASE .
+```
+
+Укажите `CLICKSHIELD_IMAGE=clickshield:YOUR_RELEASE` в `.env.production` и задайте
+`BOOTSTRAP_ALLOWED_ORIGINS=https://example.com,https://www.example.com`.
+Интеграции задаются для своего счётчика/пикселя; в шаблоне нет рабочих ID.
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+curl --fail http://127.0.0.1:18088/healthz
+```
+
+PostgreSQL не публикует порт. Приложение доступно на `127.0.0.1:18088`;
+proxy на том же хосте направляет HTTPS-запросы на этот адрес. Production Compose
+доверяет proxy-заголовкам: обязательно очищайте входящие `X-Forwarded-For`,
+`X-Real-IP`, `CF-Connecting-IP`, `CF-ASN`, `CF-IPCountry`, `X-GeoIP-*` и передавайте
+только значения, установленные доверенной инфраструктурой. Если proxy в отдельном
+контейнере, настройте приватную Docker-сеть и адрес upstream соответствующим образом.
+
+Ограничьте административный доступ по VPN/IP или через отдельный шлюз. Публичные
+`/tracker.js`, `/assets/`, `/v1/events`, `/v1/session/finish`, `/v1/tracker/config`,
+`/v1/replay`, `/l/` и `/p/` должны оставаться доступны нужным клиентам;
+API и MCP имеют собственную авторизацию. Настройте лимиты тела и частоты запросов
+с учётом replay. [Требования безопасности](../SECURITY.md).
+
+Проверьте внешний `/healthz`, вход, получение трекера и реальный визит с разрешённого
+origin. Сборка автоматически загружает IP→ASN-базу; GeoIP City MMDB предоставляется
+отдельно и монтируется read-only. После обновления бинарника tracker и assets
+должны обновиться на сайте; долгий proxy/CDN-кэш может задержать новую версию.
+
+## Обновление и откат
+
+1. Сохраните текущий тег образа и сделайте резервную копию PostgreSQL.
+2. Выполните `make check` с тестовой БД и `make build`; для UI пройдите затронутые сценарии.
+3. Соберите новый образ с отдельным тегом, смените `CLICKSHIELD_IMAGE` и выполните `up -d`.
+4. При старте приложение применяет встроенные миграции, затем выполняет backfill и запускает HTTP/воркеры. Проверьте логи, `/healthz`, вход, визиты и очередь.
+5. При ошибке остановите обновление и оцените совместимость схемы со старым бинарником. Автоматических down-миграций нет; возврат образа не отменяет SQL-миграции. Для восстановления БД используйте проверенную копию.
+
+Не запускайте одновременно разные версии при изменении схемы без проверки
+совместимости. Не меняйте Compose project name или имя тома базы между обновлениями:
+это создаст другой том и внешне будет выглядеть как потеря данных.
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=100 app
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+```
+
+Приложение пишет JSON-логи. Панель показывает задержавшиеся расчёты и ошибки
+outbox; `ALERT_WEBHOOK_URL` включает JSON-уведомления о проблемах. `SENT` в очереди
+подтверждает HTTP-доставку, а не появление события в рекламном отчёте.
+
+## Резервные копии
+
+`scripts/backup.sh` использует custom-format `pg_dump`, проверяет каталог через
+`pg_restore -l`, защищает файлы правами 600, исключает параллельный запуск и удаляет
+копии старше 14 дней. Это проверка читаемости архива, а не пробное восстановление.
+По умолчанию скрипт ожидает `/opt/clickshield/compose.yml` и `/opt/clickshield/.env`.
+Для запуска из checkout укажите реальные пути:
+
+```bash
+CLICKSHIELD_APP_DIR="$PWD" \
+CLICKSHIELD_COMPOSE_FILE=docker-compose.prod.yml \
+CLICKSHIELD_ENV_FILE=.env.production \
+  bash scripts/backup.sh
+```
+
+Шаблон systemd timer запускает backup ежедневно в 02:30 UTC. Для установки в
+`/opt/clickshield` скопируйте туда `backup.sh`; в service задайте
+`CLICKSHIELD_COMPOSE_FILE` и `CLICKSHIELD_ENV_FILE`, если файлы называются иначе.
+Установите `scripts/clickshield-backup.service` и `.timer` в `/etc/systemd/system/`,
+затем выполните `systemctl daemon-reload` и
+`systemctl enable --now clickshield-backup.timer`.
+
+`scripts/pull_backup.sh` копирует последнюю копию с `/opt/clickshield/backups` по SSH,
+сверяет SHA-256 и хранит локальные копии 30 дней. Требуются SSH, rsync и sha256sum:
+
+```bash
+CLICKSHIELD_BACKUP_HOST=backup-user@example.com bash scripts/pull_backup.sh
+```
+
+Для пользовательского timer установите скрипт в
+`~/.local/lib/clickshield/pull_backup.sh`, создайте закрытый
+`~/.config/clickshield/backup.env` с `CLICKSHIELD_BACKUP_HOST` и при необходимости
+`CLICKSHIELD_BACKUP_DIR`, скопируйте `clickshield-backup-pull.service`/`.timer` в
+`~/.config/systemd/user/`. Включите через `systemctl --user daemon-reload` и
+`systemctl --user enable --now clickshield-backup-pull.timer` (06:00 по местному времени).
+Пользователь SSH должен иметь право читать архивы; настройте это отдельно.
+
+Копии содержат пользовательские данные и зашифрованные секреты интеграций.
+Шифруйте хранилище копий, ограничивайте доступ и храните `ENCRYPTION_KEY` отдельно.
+Политика удаления данных из рабочей БД не удаляет их из старых архивов.
+
+## Пробное восстановление
+
+Используйте отдельный PostgreSQL с пустой БД `clickshield_restore` и ролью
+`clickshield`; никогда не направляйте этот пример в рабочую базу:
+
+```bash
+pg_restore --exit-on-error --no-owner --no-privileges \
+  --dbname="$CLICKSHIELD_RESTORE_DATABASE_URL" /path/to/clickshield.dump
+```
+
+Проверьте таблицы, `schema_migrations`, количество данных и старт соответствующей
+версии приложения с тем же `ENCRYPTION_KEY`. Изолируйте восстановленный сервис от
+сайтов и исходящих интеграций: сохранённый outbox может повторно отправить события.
+
+## Проверка установленного сервиса
+
+```bash
+python3 scripts/check_deployment.py \
+  --base https://clickshield.example.com --env-file .env.production
+```
+
+Скрипт входит в панель, читает отчёты и проверяет запреты доступа. `--enable-replay`
+меняет настройки проекта (включает запись 100% на 7 дней); применяйте этот флаг
+только намеренно. Скрипт не устанавливает TLS, proxy или интеграции.

@@ -1,0 +1,1499 @@
+openapi: 3.1.0
+info:
+  title: ClickShield Antifraud API
+  version: 1.2.0
+  description: |
+    Public tracker ingestion, product analytics, scoped read-only API keys, MCP and administration API.
+    Public project keys identify a site but are not secrets. Administrative
+    write operations require both the session cookie and X-CSRF-Token.
+servers:
+  - url: https://antifraud.example.com
+paths:
+  /login:
+    get:
+      summary: Admin login page
+      responses:
+        '200':
+          description: HTML login form
+          content:
+            text/html:
+              schema: { type: string }
+        '303': { description: Already authenticated; redirect to dashboard }
+    post:
+      summary: Create an admin session
+      description: |
+        Validates same-host Origin when supplied. Sets an HttpOnly SameSite=Strict
+        clickshield_session cookie on success (12 hours; Secure when configured).
+        Invalid credentials redirect to /login?error=1. Verify GET /v1/me after login.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '303': { description: Redirect to dashboard on success or login form on invalid credentials }
+        '400': { description: Invalid form (plain text) }
+        '403': { description: Invalid Origin (plain text) }
+        '429': { description: Login rate limit exceeded (plain text) }
+        '500': { description: Unable to create session (plain text) }
+
+  /logout:
+    post:
+      summary: End the current admin session
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: Session ended and cookie expired
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service and PostgreSQL are available
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /tracker.js:
+    get:
+      summary: Browser tracker
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      responses:
+        '200':
+          description: JavaScript tracker
+          content:
+            application/javascript:
+              schema: { type: string }
+
+  /v1/events:
+    options:
+      summary: CORS preflight for tracker batches
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      responses:
+        '204': { description: Origin allowed }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Receive a batch of behavioral events
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventBatch' }
+          text/plain:
+            schema:
+              description: JSON serialized EventBatch; used by sendBeacon to avoid a preflight.
+              type: string
+      responses:
+        '202':
+          description: Batch accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inserted_events, decision]
+                properties:
+                  inserted_events: { type: integer, minimum: 0 }
+                  decision: { type: string, enum: [MONITOR, ALLOW, BLOCK] }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /v1/session/finish:
+    options:
+      summary: CORS preflight for session finish
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      responses:
+        '204': { description: Origin allowed }
+    post:
+      summary: Request delayed finalization and scoring
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinishRequest' }
+          text/plain:
+            schema:
+              description: JSON serialized FinishRequest.
+              type: string
+      responses:
+        '202':
+          description: Finish request accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted: { type: boolean }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/outcomes:
+    post:
+      summary: Record a submitted lead from the site backend
+      description: Requires Authorization Bearer OUTCOME_API_TOKEN. Does not change the lead decision.
+      security: [{ outcomeBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id, external_id, status]
+              properties:
+                session_id: { type: string, format: uuid }
+                external_id: { type: string, maxLength: 128 }
+                status: { type: string, enum: [SUBMITTED] }
+      responses:
+        '200': { description: Lead linked to session }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/me:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Current administrator and CSRF token
+      responses:
+        '200':
+          description: Authenticated administrator
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, username, csrf_token, expires_at]
+                properties:
+                  user_id: { type: string, format: uuid }
+                  username: { type: string }
+                  csrf_token: { type: string }
+                  expires_at: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/stats:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Classification totals
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Statistics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stats' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/bots:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Sessions per known bot and bot category
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200':
+          description: Bot statistics, most active first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bots:
+                    type: array
+                    items: { $ref: '#/components/schemas/BotStat' }
+                  categories:
+                    type: object
+                    additionalProperties: { type: integer }
+                  catalog_size: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/operations:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Operational counters for scoring and delivery
+      responses:
+        '200': { description: Operational counters }
+
+  /v1/quality:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Automatic classification outcomes by device and traffic source
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+      responses:
+        '200': { description: Reviewed lead outcome counts }
+
+  /v1/sessions:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: List sessions
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: classification
+          in: query
+          description: Use UNCLASSIFIED for sessions awaiting scoring.
+          schema: { type: string, enum: [HUMAN, SUSPICIOUS, BOT, KNOWN_BOT, UNCLASSIFIED] }
+        - name: bot
+          in: query
+          description: Exact bot name as returned by /v1/bots.
+          schema: { type: string }
+        - name: bot_category
+          in: query
+          schema: { $ref: '#/components/schemas/BotCategory' }
+        - name: paid_only
+          in: query
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Session page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/SessionItem' }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/sessions/export.csv:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Export all sessions matching dashboard filters as UTF-8 CSV
+      parameters:
+        - $ref: '#/components/parameters/ProjectID'
+        - name: classification
+          in: query
+          schema: { type: string, enum: [HUMAN, SUSPICIOUS, BOT, KNOWN_BOT, UNCLASSIFIED] }
+        - name: bot
+          in: query
+          description: Exact bot name as returned by /v1/bots.
+          schema: { type: string }
+        - name: bot_category
+          in: query
+          schema: { $ref: '#/components/schemas/BotCategory' }
+        - name: paid_only
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: CSV attachment
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/sessions/{id}:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Session metadata, features, history and trajectory
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+      responses:
+        '200':
+          description: Session detail
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /v1/sessions/{id}/label:
+    post:
+      security: [{ cookieAuth: [] }]
+      summary: Manually override a session as BOT or HUMAN
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, enum: [BOT, HUMAN] }
+                note: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Classification saved and queued for enabled integrations
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/sessions/{id}/outcomes:
+    post:
+      security: [{ cookieAuth: [] }]
+      summary: Mark a linked lead as qualified, spam or lost
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id, external_id, status]
+              properties:
+                session_id: { type: string, format: uuid }
+                external_id: { type: string }
+                status: { type: string, enum: [QUALIFIED, SPAM, LOST] }
+      responses:
+        '200': { description: Outcome saved }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/projects:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: List projects
+      responses:
+        '200':
+          description: Projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items: { $ref: '#/components/schemas/Project' }
+    post:
+      security: [{ cookieAuth: [] }]
+      summary: Create a project
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectWrite' }
+      responses:
+        '201':
+          description: Project created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/projects/{id}:
+    put:
+      security: [{ cookieAuth: [] }]
+      summary: Update project mode, origins and scoring
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectWrite' }
+      responses:
+        '200':
+          description: Updated project
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/projects/{id}/integrations:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Integration status without secret material
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Integration list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  integrations:
+                    type: array
+                    items: { $ref: '#/components/schemas/Integration' }
+
+  /v1/projects/{id}/integrations/{provider}:
+    put:
+      security: [{ cookieAuth: [] }]
+      summary: Configure Yandex Metrica or Google Analytics 4
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [yandex, google] }
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                counter_id: { type: string }
+                measurement_token: { type: string, writeOnly: true }
+                measurement_id: { type: string }
+                api_secret: { type: string, writeOnly: true }
+      responses:
+        '200': { description: Integration saved }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /v1/projects/{id}/integrations/{provider}/test:
+    post:
+      security: [{ cookieAuth: [] }]
+      summary: Test Yandex delivery or validate a Google event payload
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [yandex, google] }
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id]
+              properties:
+                session_id: { type: string, format: uuid }
+      responses:
+        '200': { description: Diagnostic result }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /v1/outbox:
+    get:
+      security: [{ cookieAuth: [] }]
+      summary: Delivery queue totals by status
+      responses:
+        '200':
+          description: Outbox counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    additionalProperties: { type: integer }
+
+  /v1/tracker/config:
+    get:
+      summary: Public replay configuration for a tracker project
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      responses:
+        '200': { description: Replay enabled flag, sample rate and transport limit }
+        '403': { $ref: '#/components/responses/Error' }
+  /v1/reports:
+    get:
+      summary: Preset aggregate analytics reports with unique visitor totals
+      description: Session filters apply (project_id, classification including NO_BOTS, source, channel, campaign, landing_url, device, replay_only, from and exclusive to) plus exact-value dimension filters referrer, utm_source, utm_medium, utm_campaign, utm_content, utm_term, exit_page, os, browser, country, network. Rows form a hierarchy over the report dimensions; level is the number of leading dimensions a row groups by, and parent rows count unique visitors exactly. Conversion uses visits with at least one lead, not lead count. A bounce is a visit with one page lasting under 15 seconds. New visitors are visitors whose first visit to the project falls in the group. Average duration uses computed features or first-to-last event span.
+      security: [{ cookieAuth: [] }, { analyticsBearer: [] }]
+      parameters:
+        - in: query
+          name: report
+          schema: { type: string, enum: [sources, referrers, campaigns, utm, terms, landing, exit, devices, browsers, geo, languages, networks, quality, bots, daily, hours, activity], default: sources }
+        - in: query
+          name: timezone
+          description: IANA timezone for day, hour and weekday dimensions
+          schema: { type: string, default: Europe/Moscow }
+      responses:
+        '200': { description: Report kind, dimension keys, hierarchical rows with level, exact totals and timezone }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/reports/timeline:
+    get:
+      summary: Report metrics over time, split by the report's first dimension
+      description: Same filters as /v1/reports; from and to are required. Buckets cover the whole period in the given timezone, including empty ones. Without series the five largest values are returned. Time-based reports return totals only.
+      security: [{ cookieAuth: [] }, { analyticsBearer: [] }]
+      parameters:
+        - in: query
+          name: report
+          schema: { type: string, default: sources }
+        - in: query
+          name: interval
+          required: true
+          schema: { type: string, enum: [hour, day, week, month] }
+        - in: query
+          name: series
+          description: Values of the first dimension to split out, up to 10; repeat the parameter
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
+        - in: query
+          name: total_only
+          schema: { type: boolean, default: false }
+        - in: query
+          name: timezone
+          schema: { type: string, default: Europe/Moscow }
+      responses:
+        '200': { description: Interval, bucket labels (YYYY-MM-DD HH:00), total metrics per bucket and per-series metrics }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { description: More than 1500 buckets for the period and interval }
+  /v1/traffic:
+    get:
+      summary: Traffic sources, campaigns and landing pages with fraud and lead counts
+      description: Accepts session filters including source, channel, campaign, landing_url, replay_only, from and to (RFC3339, exclusive to).
+      security: [{ cookieAuth: [] }, { analyticsBearer: [] }]
+      responses:
+        '200': { description: Grouped traffic rows }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/replay:
+    options:
+      summary: Replay CORS preflight
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      responses:
+        '204': { description: Origin allowed }
+    post:
+      summary: Upload an idempotent fragment of a replay event array
+      description: Base64 UTF-8 JSON bytes, up to 128 KiB decoded per fragment, at most 64 fragments per group and 20 MiB per session. Requires an existing owned session and enabled capture.
+      parameters:
+        - $ref: '#/components/parameters/ProjectKey'
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { $ref: '#/components/schemas/ReplayPart' }
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayPart' }
+      responses:
+        '202': { description: Fragment stored or already present }
+        '403': { description: Origin rejected or recording disabled }
+        '409': { description: Unavailable session or conflicting fragment }
+        '413': { description: Recording quota exceeded }
+        '422': { description: Invalid fragment }
+        '429': { description: Rate limit exceeded }
+  /v1/sessions/{id}/replay:
+    get:
+      summary: Read session replay, grouped by recorded page
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Pages with rrweb event arrays, incomplete flags and expiry; expired or absent recordings have no pages }
+        '401': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Permanently delete this session recording and prevent recapture
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Recording deleted }
+        '403': { description: CSRF token required }
+  /v1/projects/{id}/replay:
+    put:
+      summary: Change replay capture and retention settings
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled, sample_rate, retention_days]
+              properties:
+                enabled: { type: boolean }
+                sample_rate: { type: integer, minimum: 0, maximum: 100 }
+                retention_days: { type: integer, minimum: 1, maximum: 30 }
+      responses:
+        '200': { description: Settings updated; shortened retention applies to existing recordings }
+        '403': { description: CSRF token required }
+  /v1/projects/{id}/metrika-read:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Get Metrika counter and token-presence flag; never the token
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Connection metadata }
+    put:
+      summary: Save encrypted OAuth token with metrika:read scope
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [counter_id]
+              properties:
+                counter_id: { type: string }
+                oauth_token: { type: string, writeOnly: true, description: Blank keeps the existing token }
+      responses:
+        '200': { description: Connection saved }
+        '403': { description: CSRF token required }
+    delete:
+      summary: Remove the OAuth connection
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Connection removed }
+        '403': { description: CSRF token required }
+  /v1/projects/{id}/metrika-report:
+    get:
+      summary: Read Metrika Reporting API on demand
+      description: Last-source attribution, counter-local dates, full requested accuracy, 500 rows per page; response includes sampling metadata. No automatic join to ClickShield sessions.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: report, in: query, required: true, schema: { type: string, enum: [sources, campaigns, platforms, utm] } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200': { description: Metrika rows, totals, total_rows and sampling metadata }
+        '422': { description: OAuth connection missing }
+        '502': { description: Metrika request failed }
+
+  /v1/analytics/{kind}:
+    get:
+      summary: Business events, properties, goals, funnels, journey, retention or heatmap
+      security:
+      - cookieAuth: []
+      - analyticsBearer: []
+      parameters:
+      - name: kind
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - events
+          - properties
+          - goals
+          - funnels
+          - journey
+          - retention
+          - heatmap
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: classification
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: source
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: channel
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: timezone
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: event
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: page_url
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: width
+        in: query
+        required: false
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /v1/projects/{id}/definitions:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      summary: List saved goals and funnels
+      security:
+      - cookieAuth: []
+      - analyticsBearer: []
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+    post:
+      summary: Create goal or funnel
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyticsDefinition'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /v1/projects/{id}/definitions/{definition}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: definition
+      in: path
+      required: true
+      schema:
+        type: string
+    put:
+      summary: Edit goal or funnel
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyticsDefinition'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+    delete:
+      summary: Delete definition
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /v1/projects/{id}/analytics-keys:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      summary: List key metadata, never full tokens
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+    post:
+      summary: Create read-only key for one project; token returned once
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyticsKeyRequest'
+      responses:
+        '201':
+          description: key metadata and token
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /v1/projects/{id}/analytics-keys/{key}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: key
+      in: path
+      required: true
+      schema:
+        type: string
+    delete:
+      summary: Revoke key immediately
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /v1/projects/{id}/tools/{kind}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: kind
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+        - links
+        - pixels
+        - annotations
+    get:
+      summary: List configured tools and request counts, filtered by period
+      security:
+      - cookieAuth: []
+      - analyticsBearer: []
+      parameters:
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+    post:
+      summary: Create tool
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - $ref: '#/components/schemas/TrackedLinkRequest'
+              - $ref: '#/components/schemas/TrackingPixelRequest'
+              - $ref: '#/components/schemas/AnnotationRequest'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /v1/projects/{id}/tools/{kind}/{tool}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: kind
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+        - links
+        - pixels
+        - annotations
+    - name: tool
+      in: path
+      required: true
+      schema:
+        type: string
+    put:
+      summary: Edit tool
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - $ref: '#/components/schemas/TrackedLinkRequest'
+              - $ref: '#/components/schemas/TrackingPixelRequest'
+              - $ref: '#/components/schemas/AnnotationRequest'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+    delete:
+      summary: Delete tool
+      security:
+      - cookieAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: JSON result
+        '400':
+          description: Invalid request
+        '401':
+          description: Authentication required
+        '403':
+          description: Project scope or CSRF violation
+  /l/{slug}:
+    get:
+      summary: Count a request and redirect to configured destination
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '302':
+          description: Redirect with no-store
+        '404':
+          description: Unknown or disabled link
+        '429':
+          description: Rate limit
+    head:
+      summary: Resolve link without counting
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '302':
+          description: Redirect
+        '404':
+          description: Unknown link
+  /p/{pixel}:
+    get:
+      summary: Count pixel request and return transparent GIF, no-cache
+      parameters:
+      - name: pixel
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: GIF 1x1
+          content:
+            image/gif:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Unknown/disabled pixel
+        '429':
+          description: Rate limit
+  /mcp:
+    post:
+      summary: Authenticated read-only MCP Streamable HTTP (MCP_ENABLED=true)
+      security:
+      - analyticsBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC MCP message; official MCP SDK negotiates protocol
+                version
+      responses:
+        '200':
+          description: MCP JSON-RPC response
+        '202':
+          description: Notification accepted
+        '401':
+          description: Valid analytics key required
+        '403':
+          description: Invalid Origin
+    get:
+      summary: MCP streaming is disabled in stateless JSON mode
+      security:
+      - analyticsBearer: []
+      responses:
+        '405':
+          description: No SSE stream
+
+components:
+  securitySchemes:
+    analyticsBearer:
+      type: http
+      scheme: bearer
+      description: Read-only one-project key, created in the admin panel.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: clickshield_session
+    outcomeBearer:
+      type: http
+      scheme: bearer
+
+  parameters:
+    ProjectKey:
+      name: key
+      in: query
+      required: true
+      description: Public per-site tracker key.
+      schema: { type: string, minLength: 8 }
+    ProjectID:
+      name: project_id
+      in: query
+      required: false
+      schema: { type: string, format: uuid }
+    SessionID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: { type: string }
+
+  schemas:
+    Classification:
+      type: string
+      enum: [HUMAN, SUSPICIOUS, BOT, KNOWN_BOT]
+
+    Event:
+      type: object
+      required: [type, ts]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [pageview, heartbeat, mousemove, click, scroll, visibility, touch, automation, business]
+        name: { type: string, minLength: 1, maxLength: 80, description: Required for business events }
+        page_url: { type: string, format: uri }
+        document_height: { type: number, minimum: 0, maximum: 10000000 }
+        properties:
+          type: object
+          maxProperties: 32
+          additionalProperties:
+            type: [string, number, boolean, "null"]
+          description: Scalar business parameters, maximum 8 KiB total.
+        ts: { type: integer, description: Unix milliseconds }
+        x: { type: number }
+        y: { type: number }
+        vw: { type: number }
+        vh: { type: number }
+        scroll_y: { type: number }
+        depth: { type: number, minimum: 0, maximum: 1 }
+        visible: { type: boolean }
+        active_ms: { type: integer, minimum: 0 }
+        idle_ms: { type: integer, minimum: 0 }
+        page_index: { type: integer, minimum: 1 }
+        pointer: { type: string }
+        button: { type: integer }
+        extra: { type: object, additionalProperties: true }
+
+    EventBatch:
+      type: object
+      additionalProperties: false
+      required: [session_id, visitor_id, batch_id, page_url, events]
+      properties:
+        session_id: { type: string, format: uuid }
+        visitor_id: { type: string, format: uuid }
+        batch_id: { type: string, format: uuid }
+        sent_at: { type: integer }
+        page_url: { type: string, format: uri }
+        landing_url: { type: string, format: uri }
+        referrer: { type: string }
+        yandex_client_id: { type: string }
+        google_client_id: { type: string }
+        yclid: { type: string }
+        gclid: { type: string }
+        utm:
+          type: object
+          properties:
+            source: { type: string }
+            medium: { type: string }
+            campaign: { type: string }
+            term: { type: string }
+            content: { type: string }
+        fingerprint: { type: string }
+        device: { type: object, additionalProperties: true }
+        automation:
+          type: object
+          additionalProperties: { type: boolean }
+        page_index: { type: integer, minimum: 1 }
+        finish:
+          type: boolean
+          description: Optional redundant finish marker used by final sendBeacon batches.
+        events:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/Event' }
+
+    FinishRequest:
+      type: object
+      additionalProperties: false
+      required: [session_id, visitor_id, batch_id]
+      properties:
+        session_id: { type: string, format: uuid }
+        visitor_id: { type: string, format: uuid }
+        batch_id: { type: string, format: uuid }
+        reason: { type: string }
+        sent_at: { type: integer }
+
+    Stats:
+      type: object
+      required: [total, human, suspicious, bot, known_bot, unclassified, average_risk, paid_visits]
+      properties:
+        total: { type: integer }
+        human: { type: integer }
+        suspicious: { type: integer }
+        bot: { type: integer }
+        known_bot: { type: integer }
+        unclassified: { type: integer }
+        average_risk: { type: number }
+        paid_visits: { type: integer }
+
+    BotCategory:
+      type: string
+      description: automation marks undeclared clients (headless browsers, HTTP libraries) scored as regular sessions; every other category is a declared crawler classified KNOWN_BOT.
+      enum: [search, ai, social, seo, ads, monitoring, feeds, security, other, automation]
+
+    BotStat:
+      type: object
+      properties:
+        name: { type: string }
+        vendor: { type: string }
+        category: { $ref: '#/components/schemas/BotCategory' }
+        sessions: { type: integer }
+        last_24h: { type: integer }
+        last_7d: { type: integer }
+        visitors: { type: integer }
+        ips: { type: integer }
+        known_bot: { type: integer }
+        bot: { type: integer }
+        suspicious: { type: integer }
+        human: { type: integer }
+        unclassified: { type: integer }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+
+    SessionItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        project_name: { type: string }
+        started_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        duration_ms: { type: integer }
+        classification: { type: string }
+        risk_score: { type: integer, minimum: 0, maximum: 100 }
+        yandex_client_id: { type: string }
+        google_client_id: { type: string }
+        yclid: { type: string }
+        gclid: { type: string }
+        utm_source: { type: string }
+        utm_medium: { type: string }
+        utm_campaign: { type: string }
+        click_count: { type: integer }
+        scroll_depth: { type: number }
+        fingerprint: { type: string }
+        ip: { type: string }
+        asn: { type: string }
+        as_org: { type: string }
+        device_type: { type: string }
+        manual_label: { type: string }
+
+    Project:
+      type: object
+      required: [id, name, public_key, allowed_origins, mode, scoring_config]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        public_key: { type: string }
+        allowed_origins:
+          type: array
+          items: { type: string }
+        mode: { type: string, enum: [MONITORING, NOTIFY, BLOCKING, BLOCKING_BOTS] }
+        scoring_config: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    ProjectWrite:
+      type: object
+      required: [name, allowed_origins]
+      properties:
+        name: { type: string, maxLength: 120 }
+        allowed_origins:
+          type: array
+          minItems: 1
+          items: { type: string }
+        mode: { type: string, enum: [MONITORING, NOTIFY, BLOCKING, BLOCKING_BOTS], default: MONITORING }
+        scoring_config: { type: object, additionalProperties: true }
+
+    Integration:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        provider: { type: string, enum: [YANDEX_METRICA, GOOGLE_ANALYTICS] }
+        enabled: { type: boolean }
+        config: { type: object, additionalProperties: true }
+        has_secret: { type: boolean }
+        last_status: { type: string }
+        last_error: { type: string }
+        last_sent_at: { type: string, format: date-time }
+
+    ReplayPart:
+      type: object
+      required: [session_id, visitor_id, page_id, page_index, page_url, sequence, part_index, part_count, started_at, ended_at, data]
+      properties:
+        session_id: { type: string, format: uuid }
+        visitor_id: { type: string, format: uuid }
+        page_id: { type: string, format: uuid }
+        page_index: { type: integer, minimum: 1, maximum: 1000 }
+        page_url: { type: string }
+        sequence: { type: integer, minimum: 0, maximum: 5000 }
+        part_index: { type: integer, minimum: 0 }
+        part_count: { type: integer, minimum: 1, maximum: 64 }
+        started_at: { type: integer, description: Unix milliseconds }
+        ended_at: { type: integer, description: Unix milliseconds }
+        data: { type: string, contentEncoding: base64 }
+
+    AnalyticsDefinition:
+      type: object
+      required:
+      - name
+      - kind
+      - window_minutes
+      - steps
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        kind:
+          type: string
+          enum:
+          - goal
+          - funnel
+        window_minutes:
+          type: integer
+          minimum: 1
+          maximum: 10080
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 12
+          items:
+            type: object
+            required:
+            - type
+            - value
+            properties:
+              type:
+                type: string
+                enum:
+                - page
+                - event
+                - outcome
+              value:
+                type: string
+              match:
+                type: string
+                enum:
+                - exact
+                - prefix
+              properties:
+                type: object
+                additionalProperties:
+                  type:
+                  - string
+                  - number
+                  - boolean
+                  - 'null'
+    AnalyticsKeyRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 90
+    TrackedLinkRequest:
+      type: object
+      required:
+      - name
+      - destination
+      - enabled
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: ^[a-zA-Z0-9_-]{3,80}$
+        destination:
+          type: string
+          format: uri
+        enabled:
+          type: boolean
+    TrackingPixelRequest:
+      type: object
+      required:
+      - name
+      - enabled
+      properties:
+        name:
+          type: string
+        enabled:
+          type: boolean
+    AnnotationRequest:
+      type: object
+      required:
+      - at
+      - text
+      properties:
+        at:
+          type: string
+          format: date-time
+        text:
+          type: string
+          maxLength: 500

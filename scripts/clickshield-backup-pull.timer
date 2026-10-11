@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily off-server ClickShield backup copy
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

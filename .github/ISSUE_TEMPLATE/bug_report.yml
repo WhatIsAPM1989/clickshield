@@ -1,0 +1,25 @@
+name: Ошибка
+description: Сообщить об ошибке ClickShield
+body:
+  - type: markdown
+    attributes:
+      value: Не публикуйте токены, пароли, записи с персональными данными. Уязвимости сообщайте по SECURITY.md.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести
+      description: Шаги, ожидаемый и фактический результат.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Окружение
+      description: Коммит или тег образа, версия PostgreSQL, браузер, способ запуска.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи и скриншоты
+      description: Удалите секреты и персональные данные перед отправкой.

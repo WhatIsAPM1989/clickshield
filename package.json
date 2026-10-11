@@ -1,0 +1,16 @@
+{
+  "name": "clickshield-assets",
+  "private": true,
+  "scripts": {
+    "check": "node scripts/check-js.mjs",
+    "test": "node --test sdk/index.test.mjs scripts/replay-privacy.test.mjs",
+    "vendor": "node scripts/vendor-replay.mjs"
+  },
+  "dependencies": {
+    "@rrweb/record": "2.1.7",
+    "@rrweb/replay": "2.1.7"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

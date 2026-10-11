@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ClickShield</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/styles.css?v=9">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark small">CS</span><strong>ClickShield</strong></div>
+    <nav><button data-view="dashboard" class="nav active">Сессии</button><a href="/analytics" class="nav">Аналитика</a><button data-view="projects" class="nav">Проекты</button></nav>
+    <div class="user"><span id="username"></span><button id="logout" class="ghost">Выйти</button></div>
+  </header>
+  <main>
+    <section id="view-dashboard" class="view active">
+      <div class="toolbar">
+        <div><h1>Антифрод‑мониторинг</h1><p>Объяснимые оценки посетителей и доставка аудиторных событий.</p></div>
+        <div class="filters"><select id="project-filter" aria-label="Проект"></select><select id="class-filter" aria-label="Класс"><option value="">Все классы</option><option value="NO_BOTS">Без ботов</option><option value="UNCLASSIFIED">Ожидают расчёта</option><option value="HUMAN">Люди</option><option value="SUSPICIOUS">Подозрительные</option><option value="BOT">Боты</option><option value="KNOWN_BOT">Известные краулеры</option></select><button id="refresh" class="primary">Обновить</button><button id="export-csv" type="button">Скачать CSV</button></div>
+      </div>
+      <div id="stats" class="stats"></div>
+      <section class="panel session-filter-panel">
+        <div class="traffic-controls">
+          <label>С<input id="date-from" type="date"></label><label>По<input id="date-to" type="date"></label>
+          <label>Источник<input id="source-filter" placeholder="Например, yandex"></label>
+          <label>Канал<select id="channel-filter"><option value="">Все каналы</option><option value="paid">Реклама</option><option value="paid_social">Реклама в соцсетях</option><option value="display">Медийная реклама</option><option value="organic_search">Поиск</option><option value="social">Соцсети</option><option value="referral">Другие сайты</option><option value="email">Email</option><option value="ai">AI</option><option value="tagged">Размеченный переход</option><option value="direct_unknown">Прямой / неизвестный</option></select></label>
+          <label class="integration-toggle"><input id="replay-only" type="checkbox">С записью</label><button id="clear-traffic" type="button">Сбросить</button>
+        </div>
+        <p id="traffic-drill" class="muted hidden"></p>
+      </section>
+      <div class="panel insight-panel"><div class="panel-head"><h2>Состояние обработки</h2></div><div id="operations" class="insight-grid"></div></div>
+      <div class="panel insight-panel"><div class="panel-head"><h2>Качество классификации</h2><span class="muted">За всё время: заявки с отметкой «качественная» или «спам»</span></div><div id="quality" class="table-wrap"></div></div>
+      <div class="panel insight-panel bots-panel"><div class="panel-head"><h2>Известные боты</h2><span id="bots-summary" class="muted"></span></div><div id="bot-categories" class="bot-categories"></div><div id="bots" class="table-wrap"></div></div>
+      <div class="panel sessions-panel" id="sessions-panel">
+        <div class="panel-head"><h2>Последние сессии <span id="bot-filter" class="bot-filter hidden"></span></h2><span id="outbox-status" class="muted"></span></div>
+        <div class="table-wrap"><table><thead><tr><th>Время</th><th>Проект</th><th>Класс</th><th>Риск</th><th>Клики</th><th>Scroll</th><th>Источник</th><th>IP / ASN</th><th>Fingerprint</th></tr></thead><tbody id="sessions-body"></tbody></table></div>
+        <nav class="session-pagination" aria-label="Страницы сессий"><span id="sessions-page-label" aria-live="polite">Страница 1</span><div><button id="sessions-prev" type="button" disabled>Назад</button><button id="sessions-next" type="button" disabled>Вперёд</button></div></nav>
+      </div>
+    </section>
+    <section id="view-projects" class="view">
+      <div class="toolbar"><div><h1>Проекты и интеграции</h1><p>Отдельный публичный ключ и CORS‑список для каждого сайта.</p></div><button id="new-project" class="primary">Новый проект</button></div>
+      <div class="project-grid">
+        <aside class="panel project-list"><h2>Сайты</h2><div id="project-list"></div></aside>
+        <section class="panel">
+          <div id="project-empty" class="empty">Выберите проект.</div>
+          <form id="project-form" class="hidden">
+            <div class="form-grid">
+              <label>Название<input id="p-name" required></label>
+              <label>Режим<select id="p-mode"><option value="MONITORING">Мониторинг — только сбор</option><option value="NOTIFY">Оповещение — сбор + Метрика/GA</option><option value="BLOCKING">Блокировка всех ботов</option><option value="BLOCKING_BOTS">Блокировка ботов, краулеры пропускаются</option></select></label>
+              <label class="wide">Разрешённые origins (по одному в строке)<textarea id="p-origins" rows="4"></textarea></label>
+              <label class="wide">Scoring config (JSON)<textarea id="p-scoring" rows="14" class="code"></textarea></label>
+            </div>
+            <div class="actions"><button class="primary" type="submit">Сохранить проект</button></div>
+            <div class="snippet"><strong>Установка tracker.js</strong><pre id="tracker-snippet"></pre></div>
+            <div class="integration-section">
+              <h2>Запись сессий</h2>
+              <p class="muted">Поля форм маскируются. Блоки с атрибутом data-cs-private не записываются; data-cs-mask скрывает текст. Запись начинается после загрузки трекера.</p>
+              <div class="integration-fields"><label>Доля записываемых сессий, %<input id="r-sample" type="number" min="0" max="100" value="100"></label><label>Хранение, дней<input id="r-retention" type="number" min="1" max="30" value="7"></label></div>
+              <div class="integration-actions"><label class="integration-toggle"><input id="r-enabled" type="checkbox"><span>Записывать сессии</span></label><button id="save-replay" type="button">Сохранить запись</button></div>
+            </div>
+            <div class="integration-section">
+              <h2>Яндекс Метрика</h2>
+              <div class="integration-fields">
+                <label>Counter ID<input id="y-counter"></label>
+                <label>Measurement Protocol token<input id="y-token" type="password" placeholder="Оставьте пустым, чтобы не менять"></label>
+              </div>
+              <div class="integration-actions">
+                <label class="integration-toggle"><input id="y-enabled" type="checkbox"><span>Включено</span></label>
+                <button id="save-yandex" type="button">Сохранить Яндекс</button>
+              </div>
+              <div id="y-status" class="integration-status"></div>
+            </div>
+            <div class="integration-section">
+              <h2>Чтение отчётов Яндекс Метрики</h2><p class="muted">Отдельный OAuth-токен с правом metrika:read. Measurement Protocol token выше используется для отправки событий.</p><div class="integration-fields"><label>Номер счётчика<input id="mr-counter" inputmode="numeric"></label><label>OAuth-токен<input id="mr-token" type="password" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></label></div><div class="integration-actions"><button id="save-metrika-read" type="button">Сохранить доступ</button><button id="delete-metrika-read" type="button">Удалить доступ</button></div><p id="mr-status" class="muted"></p>
+            </div><div class="integration-section"><h2>Google Analytics 4</h2>
+              <div class="integration-fields">
+                <label>Measurement ID<input id="g-measurement" placeholder="G-XXXXXXXXXX"></label>
+                <label>API secret<input id="g-secret" type="password" placeholder="Оставьте пустым, чтобы не менять"></label>
+              </div>
+              <div class="integration-actions">
+                <label class="integration-toggle"><input id="g-enabled" type="checkbox"><span>Включено</span></label>
+                <button id="save-google" type="button">Сохранить Google</button>
+              </div>
+              <div id="g-status" class="integration-status"></div>
+            </div>
+            <div class="integration-section">
+              <h2>VK Реклама</h2>
+              <div class="integration-fields"><label>ID пикселя<input id="vk-pixel" inputmode="numeric" placeholder="Например, 3229418"></label></div>
+              <p class="muted">Создайте JS-события antifraud_bot, antifraud_human и antifraud_test в пикселе VK. Передача выполняется по rb_clickid рекламного перехода; токен не требуется.</p>
+              <div class="integration-actions"><label class="integration-toggle"><input id="vk-enabled" type="checkbox"><span>Включено</span></label><button id="save-vk" type="button">Сохранить VK</button></div>
+              <div id="vk-status" class="integration-status"></div>
+            </div>
+            <div class="integration-test"><label>ID сессии для теста<input id="test-session-id" placeholder="UUID сессии с ClientID аналитики"></label><div class="integration-actions"><button id="test-yandex" type="button">Тест Яндекса</button><button id="test-google" type="button">Проверить Google</button><button id="test-vk" type="button">Тест VK</button></div><p class="muted">Яндекс и VK получают событие antifraud_test; для VK нужна сессия с rb_clickid. Google проверяет формат без записи события в отчёты.</p></div>
+          </form>
+        </section>
+      </div>
+    </section>
+  </main>
+  <dialog id="detail"><button id="detail-close" class="dialog-close">×</button><div id="detail-content"></div></dialog>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/assets/admin.js?v=12"></script>
+</body>
+</html>
