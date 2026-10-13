@@ -32,11 +32,11 @@
 | `AGGREGATE_TTL` | хранение sessions/features/classifications | `4320h` |
 | `STALE_SESSION_AFTER` | автозавершение потерянной сессии | `30m` |
 | `FINISH_GRACE` | пауза перед scoring после pagehide | `20s` |
-| `GEOIP_CITY_DATABASE` | путь к локальной City MMDB; неверный заданный путь останавливает старт | пусто |
+| `GEOIP_CITY_DATABASE` | путь к локальной City MMDB; неверный заданный путь останавливает старт. Docker-образ скачивает GeoLite2 City при сборке | `/app/GeoLite2-City.mmdb` в Docker, иначе пусто |
 | `MCP_ENABLED` | включить endpoint `/mcp` для ИИ-агентов (доступ по API-токену) | `true` |
 | `ASN_DATABASE` | база IP→ASN в формате iptoasn (`.tsv.gz`) | `/app/ip2asn.tsv.gz` |
 
-`TRUST_PROXY_HEADERS=true` допустим только за доверенным proxy/CDN, который очищает входящие заголовки. ASN берётся из `X-GeoIP-ASN`/`CF-ASN`, организация — из `X-GeoIP-Organization`. Если proxy их не передаёт, ASN и организация определяются по базе [iptoasn.com](https://iptoasn.com) (public domain). Docker-образ скачивает её при каждой сборке. Дозаполнение старых сессий выполняется явно через `clickshield backfill networks`; `serve` только загружает файл справочника.
+`TRUST_PROXY_HEADERS=true` допустим только за доверенным proxy/CDN, который очищает входящие заголовки. ASN берётся из `X-GeoIP-ASN`/`CF-ASN`, организация — из `X-GeoIP-Organization`. Если proxy их не передаёт, ASN и организация определяются по базе [iptoasn.com](https://iptoasn.com) (public domain). Docker-образ скачивает её при каждой сборке. Дозаполнение старых сессий (ASN, страна, регион, город) выполняется явно через `clickshield backfill networks`; `serve` только загружает файл справочника.
 
 `AGGREGATE_TTL=0` отключает удаление агрегатов. Сроки задаются в формате Go duration
 (`168h`, а не `7d`). `RAW_EVENTS_TTL` — минимум `1h`, `STALE_SESSION_AFTER` —

@@ -58,6 +58,11 @@ func backfill(ctx context.Context, st *store.Store, cfg config.Config, kind stri
 	var err error
 	if kind == "networks" {
 		count, requeued, err = st.FillNetworks(ctx)
+		if err == nil {
+			var located int64
+			located, err = st.FillGeo(ctx)
+			log.Info("geo backfill finished", "updated", located)
+		}
 	} else {
 		count, requeued, err = st.LabelBots(ctx)
 	}
