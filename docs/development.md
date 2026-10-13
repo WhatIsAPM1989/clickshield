@@ -32,7 +32,7 @@ docker run --detach --name clickshield-test-db \
   -e POSTGRES_DB=clickshield_test \
   -e POSTGRES_USER=clickshield_test \
   -e POSTGRES_PASSWORD=test-only \
-  -p 127.0.0.1:55432:5432 postgres:17-alpine
+  -p 127.0.0.1:55432:5432 postgres:18-alpine
 docker exec clickshield-test-db pg_isready -U clickshield_test -d clickshield_test
 # Дождитесь сообщения accepting connections.
 export CLICKSHIELD_TEST_DATABASE_URL='postgres://clickshield_test:test-only@localhost:55432/clickshield_test?sslmode=disable'

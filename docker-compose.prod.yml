@@ -1,13 +1,13 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: clickshield
       POSTGRES_USER: clickshield
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
-      - clickshield_pgdata:/var/lib/postgresql/data
+      - clickshield_pgdata18:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U clickshield -d clickshield"]
       interval: 5s
@@ -80,4 +80,4 @@ services:
         condition: service_completed_successfully
 
 volumes:
-  clickshield_pgdata:
+  clickshield_pgdata18:
