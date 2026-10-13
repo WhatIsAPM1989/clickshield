@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ClickShield</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/styles.css?v=9">
+  <link rel="stylesheet" href="/assets/styles.css?v=10">
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark small">CS</span><strong>ClickShield</strong></div>
-    <nav><button data-view="dashboard" class="nav active">Сессии</button><a href="/analytics" class="nav">Аналитика</a><button data-view="projects" class="nav">Проекты</button></nav>
+    <nav><button data-view="dashboard" class="nav active">Сессии</button><a href="/analytics" class="nav">Аналитика</a><button data-view="projects" class="nav">Проекты</button><button data-view="access" class="nav hidden">Доступ</button></nav>
     <div class="user"><span id="username"></span><button id="logout" class="ghost">Выйти</button></div>
   </header>
   <main>
@@ -96,9 +96,15 @@
         </section>
       </div>
     </section>
+    <section id="view-access" class="view">
+      <div class="toolbar"><div><h1>Доступ</h1><p>Одноразовая ссылка действует 7 дней. Отправьте её коллеге сами — он задаст email и пароль.</p></div><button id="create-invite" class="primary">Создать ссылку</button></div>
+      <section class="panel"><h2>Активные ссылки</h2><div id="access-link" class="hidden"><input id="access-url" readonly><button id="copy-invite" type="button">Копировать</button></div><p id="access-link-hint" class="muted hidden">Ссылка показывается один раз — скопируйте её сейчас.</p><div class="table-wrap"><table><thead><tr><th>Создана</th><th>Действует до</th><th></th></tr></thead><tbody id="invites"></tbody></table></div></section>
+      <section class="panel"><h2>Пользователи</h2><div class="table-wrap"><table><thead><tr><th>Email / логин</th><th>Создан</th><th>Статус</th><th></th></tr></thead><tbody id="users"></tbody></table></div></section>
+    </section>
   </main>
   <dialog id="detail"><button id="detail-close" class="dialog-close">×</button><div id="detail-content"></div></dialog>
   <div id="toast" class="toast hidden"></div>
-  <script src="/assets/admin.js?v=12"></script>
+  <script src="/assets/admin.js?v=13"></script>
+  <script src="/assets/admin-access.js?v=1"></script>
 </body>
 </html>

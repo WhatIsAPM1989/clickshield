@@ -174,11 +174,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/outcomes", s.serverOutcome)
 	s.mux.HandleFunc("GET /login", s.loginPage)
 	s.mux.HandleFunc("POST /login", s.login)
+	s.mux.HandleFunc("GET /invite/{token}", s.invitePage)
+	s.mux.HandleFunc("POST /invite/{token}", s.acceptInvite)
 	s.mux.HandleFunc("GET /{$}", s.requirePage(s.index))
 	s.mux.HandleFunc("GET /analytics", s.requirePage(s.analyticsPage))
 	s.mux.HandleFunc("GET /assets/{name}", s.asset)
 	s.mux.HandleFunc("GET /v1/me", s.requireAPI(s.me))
 	s.mux.HandleFunc("POST /logout", s.requireAPI(s.csrf(s.logout)))
+	s.mux.HandleFunc("GET /v1/invites", s.requireAPI(s.requireOwner(s.invites)))
+	s.mux.HandleFunc("POST /v1/invites", s.requireAPI(s.requireOwner(s.csrf(s.createInvite))))
+	s.mux.HandleFunc("DELETE /v1/invites/{id}", s.requireAPI(s.requireOwner(s.csrf(s.deleteInvite))))
+	s.mux.HandleFunc("GET /v1/users", s.requireAPI(s.requireOwner(s.users)))
+	s.mux.HandleFunc("POST /v1/users/{id}/active", s.requireAPI(s.requireOwner(s.csrf(s.setUserActive))))
 	s.mux.HandleFunc("GET /v1/projects", s.requireAPI(s.projects))
 	s.mux.HandleFunc("POST /v1/projects", s.requireAPI(s.csrf(s.createProject)))
 	s.mux.HandleFunc("PUT /v1/projects/{id}", s.requireAPI(s.csrf(s.updateProject)))
@@ -305,7 +312,7 @@ func (s *Server) security(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/login" || r.URL.Path == "/" {
+		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/login" || r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/invite/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		if s.cfg.CookieSecure && r.TLS != nil {

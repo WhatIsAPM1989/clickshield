@@ -23,7 +23,8 @@ paths:
       summary: Create an admin session
       description: |
         Validates same-host Origin when supplied. Sets an HttpOnly SameSite=Strict
-        clickshield_session cookie on success (12 hours; Secure when configured).
+        clickshield_session cookie on success (12 hours, or 90 days with remember=1;
+        Secure when configured).
         Invalid credentials redirect to /login?error=1. Verify GET /v1/me after login.
       requestBody:
         required: true
@@ -35,12 +36,133 @@ paths:
               properties:
                 username: { type: string }
                 password: { type: string, format: password }
+                remember: { type: string, enum: ['1'], description: Keep the session for 90 days }
       responses:
         '303': { description: Redirect to dashboard on success or login form on invalid credentials }
         '400': { description: Invalid form (plain text) }
         '403': { description: Invalid Origin (plain text) }
         '429': { description: Login rate limit exceeded (plain text) }
         '500': { description: Unable to create session (plain text) }
+
+  /invite/{token}:
+    parameters:
+      - { name: token, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Invite sign-up page
+      responses:
+        '200': { description: HTML sign-up form }
+        '303': { description: 'Invalid or used invite; redirect to ?error=invalid' }
+    post:
+      summary: Accept a one-time invite and create a user
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [email, password, password2]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 12 }
+                password2: { type: string, format: password }
+      responses:
+        '303': { description: 'Redirect to dashboard with a 12-hour session, or to ?error=invalid/email/short/mismatch/exists' }
+        '403': { description: Invalid Origin (plain text) }
+        '429': { description: Rate limit exceeded (plain text) }
+
+  /v1/invites:
+    get:
+      summary: List active invites (owner only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200':
+          description: Unused, unexpired invites
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        created_at: { type: string, format: date-time }
+                        expires_at: { type: string, format: date-time }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create a one-time invite valid for 7 days (owner only)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '201':
+          description: Invite path, shown only once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: { type: string, example: /invite/abc }
+                  expires_at: { type: string, format: date-time }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /v1/invites/{id}:
+    delete:
+      summary: Revoke an unused invite (owner only)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Revoked }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /v1/users:
+    get:
+      summary: List admin users (owner only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        username: { type: string }
+                        active: { type: boolean }
+                        created_at: { type: string, format: date-time }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /v1/users/{id}/active:
+    post:
+      summary: Enable or disable a user; disabling ends their sessions (owner only)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [active]
+              properties:
+                active: { type: boolean }
+      responses:
+        '200': { description: Updated }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
 
   /logout:
     post:
@@ -188,8 +310,9 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user_id, username, csrf_token, expires_at]
+                required: [user_id, username, csrf_token, expires_at, is_owner]
                 properties:
+                  is_owner: { type: boolean, description: True for the ADMIN_USERNAME user }
                   user_id: { type: string, format: uuid }
                   username: { type: string }
                   csrf_token: { type: string }

@@ -33,12 +33,9 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
-		u, err := url.Parse(origin)
-		if err != nil || !strings.EqualFold(u.Host, r.Host) {
-			http.Error(w, "Недопустимый Origin", http.StatusForbidden)
-			return
-		}
+	if !sameOrigin(r) {
+		http.Error(w, "Недопустимый Origin", http.StatusForbidden)
+		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	ip := IPFromHTTP(r, s.cfg.TrustProxyHeaders).String()
@@ -61,14 +58,50 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?error=1", http.StatusSeeOther)
 		return
 	}
-	raw, _, e := s.store.CreateAdminSession(r.Context(), a.UserID, 12*time.Hour)
-	if e != nil {
-		http.Error(w, "Не удалось создать сессию", 500)
+	ttl := sessionTTL
+	if r.FormValue("remember") == "1" {
+		ttl = rememberTTL
+	}
+	if !s.startSession(w, r, a.UserID, ttl) {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "clickshield_session", Value: raw, Path: "/", HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds())})
 	s.store.Audit(r.Context(), a.UserID, "LOGIN", "admin_user", a.UserID, map[string]any{"ip": ip})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+const (
+	sessionTTL  = 12 * time.Hour
+	rememberTTL = 90 * 24 * time.Hour
+)
+
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID string, ttl time.Duration) bool {
+	raw, _, e := s.store.CreateAdminSession(r.Context(), userID, ttl)
+	if e != nil {
+		http.Error(w, "Не удалось создать сессию", 500)
+		return false
+	}
+	http.SetCookie(w, &http.Cookie{Name: "clickshield_session", Value: raw, Path: "/", HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode, MaxAge: int(ttl.Seconds())})
+	return true
+}
+func sameOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(u.Host, r.Host)
+}
+func (s *Server) isOwner(a store.Admin) bool {
+	return strings.EqualFold(a.Username, s.cfg.AdminUsername)
+}
+func (s *Server) requireOwner(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a, _ := adminFrom(r.Context()); !s.isOwner(a) {
+			writeError(w, http.StatusForbidden, "owner only")
+			return
+		}
+		next(w, r)
+	}
 }
 func (s *Server) requirePage(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +144,7 @@ func (s *Server) csrf(next http.HandlerFunc) http.HandlerFunc {
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	a, _ := adminFrom(r.Context())
-	writeJSON(w, 200, map[string]any{"user_id": a.UserID, "username": a.Username, "csrf_token": a.CSRF, "expires_at": a.ExpiresAt})
+	writeJSON(w, 200, map[string]any{"user_id": a.UserID, "username": a.Username, "csrf_token": a.CSRF, "expires_at": a.ExpiresAt, "is_owner": s.isOwner(a)})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	a, _ := adminFrom(r.Context())
