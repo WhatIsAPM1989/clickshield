@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ClickShield</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/styles.css?v=10">
+  <link rel="stylesheet" href="/assets/styles.css?v=11">
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark small">CS</span><strong>ClickShield</strong></div>
-    <nav><button data-view="dashboard" class="nav active">Сессии</button><a href="/analytics" class="nav">Аналитика</a><button data-view="projects" class="nav">Проекты</button><button data-view="access" class="nav hidden">Доступ</button></nav>
+    <nav><button data-view="dashboard" class="nav active">Сессии</button><a href="/analytics" class="nav">Аналитика</a><button data-view="projects" class="nav">Проекты</button><button data-view="api" class="nav">API и MCP</button><button data-view="access" class="nav hidden">Доступ</button></nav>
     <div class="user"><span id="username"></span><button id="logout" class="ghost">Выйти</button></div>
   </header>
   <main>
@@ -101,10 +101,30 @@
       <section class="panel"><h2>Активные ссылки</h2><div id="access-link" class="hidden"><input id="access-url" readonly><button id="copy-invite" type="button">Копировать</button></div><p id="access-link-hint" class="muted hidden">Ссылка показывается один раз — скопируйте её сейчас.</p><div class="table-wrap"><table><thead><tr><th>Создана</th><th>Действует до</th><th></th></tr></thead><tbody id="invites"></tbody></table></div></section>
       <section class="panel"><h2>Пользователи</h2><div class="table-wrap"><table><thead><tr><th>Email / логин</th><th>Создан</th><th>Статус</th><th></th></tr></thead><tbody id="users"></tbody></table></div></section>
     </section>
+    <section id="view-api" class="view">
+      <div class="toolbar"><div><h1>API и MCP</h1><p>Токены для скриптов и ИИ-агентов: доступ к одному или всем проектам с выбранными правами. Пользователи, приглашения и токены доступны только в панели.</p></div></div>
+      <section class="panel"><h2>Новый токен</h2>
+        <form id="api-form" class="form-grid">
+          <label>Название<input id="api-name" required maxlength="120" placeholder="Например, Claude — аналитика"></label>
+          <label>Проект<select id="api-project"></select></label>
+          <label>Срок, дней<input id="api-days" type="number" min="1" max="365" value="90" required></label>
+          <div class="wide"><table class="api-scope-table"><thead><tr><th>Права</th><th>Чтение</th><th>Запись</th></tr></thead><tbody id="api-scopes"></tbody></table></div>
+          <div class="wide actions"><button class="primary" type="submit">Выпустить токен</button></div>
+        </form>
+        <div id="api-issued" class="hidden"><div class="api-secret"><input id="api-token" readonly aria-label="Токен"><button data-copy="api-token" type="button">Копировать</button></div><p class="muted">Токен показывается один раз — скопируйте его сейчас. Команды ниже уже содержат его.</p></div>
+      </section>
+      <section class="panel"><h2>Подключение</h2><p id="mcp-status" class="muted"></p>
+        <h3>HTTP API</h3><div class="snippet"><pre id="snip-curl"></pre></div><div class="actions"><button data-copy="snip-curl" type="button">Копировать</button></div>
+        <h3>Claude Code</h3><div class="snippet"><pre id="snip-claude"></pre></div><div class="actions"><button data-copy="snip-claude" type="button">Копировать</button></div>
+        <h3>JSON-конфиг MCP (Cursor, Claude Desktop и др.)</h3><div class="snippet"><pre id="snip-json"></pre></div><div class="actions"><button data-copy="snip-json" type="button">Копировать</button></div>
+      </section>
+      <section class="panel"><h2>Токены</h2><div class="table-wrap"><table><thead><tr><th>Название</th><th>Проект</th><th>Права</th><th>Выпустил</th><th>Действует до</th><th>Использован</th><th></th></tr></thead><tbody id="api-tokens"></tbody></table></div></section>
+    </section>
   </main>
   <dialog id="detail"><button id="detail-close" class="dialog-close">×</button><div id="detail-content"></div></dialog>
   <div id="toast" class="toast hidden"></div>
-  <script src="/assets/admin.js?v=13"></script>
+  <script src="/assets/admin.js?v=14"></script>
   <script src="/assets/admin-access.js?v=1"></script>
+  <script src="/assets/admin-api.js?v=1"></script>
 </body>
 </html>

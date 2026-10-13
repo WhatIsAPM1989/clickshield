@@ -4,13 +4,13 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Аналитика — ClickShield</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/styles.css?v=9">
-  <link rel="stylesheet" href="/assets/reports.css?v=3">
+  <link rel="stylesheet" href="/assets/styles.css?v=11">
+  <link rel="stylesheet" href="/assets/reports.css?v=4">
 </head>
 <body class="analytics-page">
   <header class="topbar">
     <div class="brand"><span class="brand-mark small">CS</span><strong>ClickShield</strong></div>
-    <nav><a href="/" class="nav">Сессии</a><a href="/analytics" class="nav active" aria-current="page">Аналитика</a><a href="/#projects" class="nav">Проекты</a></nav>
+    <nav><a href="/" class="nav">Сессии</a><a href="/analytics" class="nav active" aria-current="page">Аналитика</a><a href="/#projects" class="nav">Проекты</a><a href="/#api" class="nav">API и MCP</a></nav>
     <div class="user"><span id="username"></span><button id="logout" class="ghost">Выйти</button></div>
   </header>
   <div class="rp-layout">
@@ -133,17 +133,13 @@
         <div class="rp-panel-bar">
           <p id="tools-status" role="status" class="rp-panel-status"></p>
           <div class="rp-panel-actions">
-            <select id="tool-kind" hidden aria-hidden="true"><option value="links"></option><option value="pixels"></option><option value="annotations"></option><option value="keys"></option></select>
+            <select id="tool-kind" hidden aria-hidden="true"><option value="links"></option><option value="pixels"></option><option value="annotations"></option></select>
             <button hidden id="load-tools" type="button" class="rp-button">Обновить</button>
             <button id="new-tool" type="button" class="rp-button rp-primary">Создать</button>
           </div>
         </div>
-        <div id="key-result" class="rp-key-result" hidden>
-          <label>Сохраните ключ — он показывается один раз<textarea id="new-key-token" readonly rows="2"></textarea></label>
-          <div><button id="copy-key" type="button" class="rp-button rp-primary">Скопировать ключ</button><button id="hide-key" type="button" class="rp-button">Скрыть</button></div>
-        </div>
         <div id="tools-result" class="rp-tools-result"></div>
-        <p class="rp-note muted">MCP-доступ к аналитике: /mcp, включается на сервере переменной MCP_ENABLED=true.</p>
+        <p class="rp-note muted">Доступ к аналитике из скриптов и ИИ-агентов — токены в разделе <a href="/#api">API и MCP</a>.</p>
       </section>
       <dialog id="tool-dialog" class="rp-dialog"><form id="tool-form">
         <div class="rp-dialog-head"><h2 id="tool-dialog-title">Инструмент</h2><button id="close-tool" type="button" class="rp-icon-button" aria-label="Закрыть">×</button></div>
@@ -168,6 +164,6 @@
   </div>
   <div id="chart-tooltip" class="rp-tooltip hidden" role="presentation"></div>
   <div id="toast" class="toast hidden"></div>
-  <script type="module" src="/assets/analytics.js?v=8"></script>
+  <script type="module" src="/assets/analytics.js?v=9"></script>
 </body>
 </html>

@@ -1,75 +1,158 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/lamooof/clickshield/internal/analytics"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
-	"time"
 
+	"github.com/lamooof/clickshield/internal/access"
 	"github.com/lamooof/clickshield/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type mcpQuery struct {
-	Report         string `json:"report" jsonschema:"Report name: a traffic preset or events, properties, goals, funnels, journey, retention, heatmap, links, pixels, annotations"`
-	From           string `json:"from,omitempty" jsonschema:"Inclusive RFC3339 cohort/session start"`
-	To             string `json:"to,omitempty" jsonschema:"Exclusive RFC3339 cohort/session end"`
-	Classification string `json:"classification,omitempty" jsonschema:"HUMAN, SUSPICIOUS, BOT, KNOWN_BOT, UNCLASSIFIED or NO_BOTS"`
-	Channel        string `json:"channel,omitempty"`
-	Source         string `json:"source,omitempty"`
-	Timezone       string `json:"timezone,omitempty"`
-	Event          string `json:"event,omitempty"`
-	PageURL        string `json:"page_url,omitempty"`
-	Width          int    `json:"width,omitempty"`
-}
+const mcpInstructions = `ClickShield: antifraud for ad traffic (bot detection with explained risk scores) and product analytics.
+Start with whoami to see the token scopes and project, then list_projects. A project token fixes the project, so project_id may be omitted; an all-projects token needs project_id for project tools.
+Dates are RFC3339 with a timezone; "from" is inclusive, "to" exclusive. Classifications: HUMAN, SUSPICIOUS, BOT, KNOWN_BOT, UNCLASSIFIED, NO_BOTS (everything except bots).
+Write tools change live data: session labels and lead outcomes are sent to Yandex Metrika, GA4 and VK Ads; project mode BLOCKING affects real visitors. Confirm such changes with the user first.`
+
+// maxMCPResult keeps tool results within what an agent can use.
+const maxMCPResult = 1 << 20
+
+var mcpSchemas = mcp.NewSchemaCache()
+
 type mcpOutput struct {
 	Data any `json:"data"`
 }
 
-func (s *Server) mcpReport(ctx context.Context, req *mcp.CallToolRequest, q mcpQuery) (*mcp.CallToolResult, mcpOutput, error) {
-	pid, ok := ctx.Value(analyticsProjectKey{}).(string)
-	if !ok || !store.ValidUUID(pid) {
-		return nil, mcpOutput{}, errors.New("authenticated project required")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	f := store.SessionFilter{ProjectID: pid, Class: q.Classification, Source: q.Source, Channel: q.Channel}
-	switch f.Class {
-	case "", "HUMAN", "SUSPICIOUS", "BOT", "KNOWN_BOT", "UNCLASSIFIED", "NO_BOTS":
-	default:
-		return nil, mcpOutput{}, errors.New("invalid classification")
-	}
-	for _, v := range []struct {
-		raw string
-		dst **time.Time
-	}{{q.From, &f.From}, {q.To, &f.To}} {
-		if v.raw != "" {
-			t, e := time.Parse(time.RFC3339, v.raw)
-			if e != nil {
-				return nil, mcpOutput{}, e
-			}
-			*v.dst = &t
-		}
-	}
-	query := analytics.Query{Report: q.Report, Filter: f, Timezone: q.Timezone, Event: q.Event, PageURL: q.PageURL, Width: q.Width}
-	if err := query.Validate(); err != nil {
-		return nil, mcpOutput{}, err
-	}
-	data, err := s.analytics.Report(ctx, query)
-	if err != nil {
-		s.log.Error("MCP report", "error", err)
-		return nil, mcpOutput{}, errors.New("could not load report")
-	}
-	return nil, mcpOutput{Data: data}, nil
+// mcpTools registers the tools a token may use; the others do not exist for it.
+type mcpTools struct {
+	s   *Server
+	srv *mcp.Server
+	p   principal
 }
+
+func addTool[In any](t mcpTools, scope string, tool *mcp.Tool, h func(context.Context, In) (any, error)) {
+	if scope != "" && !access.Has(t.p.Scopes, scope) {
+		return
+	}
+	mcp.AddTool(t.srv, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, mcpOutput, error) {
+		data, err := h(ctx, in)
+		return nil, mcpOutput{Data: data}, err
+	})
+}
+
+var closedWorld = new(bool)
+
+func readTool(name, title, description string) *mcp.Tool {
+	return &mcp.Tool{Name: name, Title: title, Description: description, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: closedWorld}}
+}
+
+// writeTool marks a change; destructive changes remove or overwrite data.
+func writeTool(name, title, description string, destructive, idempotent bool) *mcp.Tool {
+	return &mcp.Tool{Name: name, Title: title, Description: description, Annotations: &mcp.ToolAnnotations{DestructiveHint: &destructive, IdempotentHint: idempotent, OpenWorldHint: closedWorld}}
+}
+
+// external marks a tool that talks to a third-party service.
+func external(t *mcp.Tool) *mcp.Tool {
+	open := true
+	t.Annotations.OpenWorldHint = &open
+	return t
+}
+
+// call runs an HTTP API route in-process as the token, so scopes, project
+// limits, validation and audit are the same as for HTTP clients.
+func (t mcpTools) call(ctx context.Context, method, path string, q url.Values, body any) (any, error) {
+	var rd io.Reader
+	if body != nil {
+		b, e := json.Marshal(body)
+		if e != nil {
+			return nil, e
+		}
+		rd = bytes.NewReader(b)
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	r, e := http.NewRequestWithContext(ctx, method, path, rd)
+	if e != nil {
+		return nil, e
+	}
+	r.Header.Set("Content-Type", "application/json")
+	r.RemoteAddr = "127.0.0.1:0"
+	w := httptest.NewRecorder()
+	t.s.mux.ServeHTTP(w, r)
+	if w.Body.Len() > maxMCPResult {
+		return nil, fmt.Errorf("result is %d bytes, too large; narrow the filters or period", w.Body.Len())
+	}
+	var out any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if w.Code >= 400 {
+		m, _ := out.(map[string]any)
+		msg, _ := m["error"].(string)
+		return nil, fmt.Errorf("HTTP %d: %s", w.Code, msg)
+	}
+	// Unwrap {"data": ...} so the tool result is {"data": ...} like over HTTP.
+	if m, ok := out.(map[string]any); ok && len(m) == 1 && m["data"] != nil {
+		return m["data"], nil
+	}
+	return out, nil
+}
+
+// project picks the project for a project-level tool.
+func (t mcpTools) project(id string) (string, error) {
+	if id == "" {
+		id = t.p.ProjectID
+	}
+	if !store.ValidUUID(id) {
+		return "", errors.New("valid project_id required; call list_projects")
+	}
+	return id, nil
+}
+
+// path joins escaped segments after /v1/.
+func apiPath(parts ...string) string {
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return "/v1/" + strings.Join(parts, "/")
+}
+
+type noInput struct{}
+
+func (s *Server) mcpServer(p principal) *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "ClickShield", Title: "ClickShield", Version: "2.0.0"}, &mcp.ServerOptions{Instructions: mcpInstructions, SchemaCache: mcpSchemas})
+	// The tool list depends on the token, so shared caches must not reuse it.
+	srv.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if list, ok := res.(*mcp.ListToolsResult); ok {
+				list.CacheScope = "private"
+			}
+			return res, err
+		}
+	})
+	t := mcpTools{s: s, srv: srv, p: p}
+	addTool(t, "", readTool("whoami", "Token info", "Name, project (empty = all projects) and scopes of the API token in use."), func(context.Context, noInput) (any, error) {
+		return map[string]any{"token": p.TokenName, "project_id": p.ProjectID, "scopes": p.Scopes}, nil
+	})
+	t.analyticsTools()
+	t.sessionTools()
+	t.projectTools()
+	return srv
+}
+
 func (s *Server) mcpHandler() http.Handler {
-	server := mcp.NewServer(&mcp.Implementation{Name: "ClickShield Analytics", Version: "1.0.0"}, nil)
-	closed := false
-	mcp.AddTool(server, &mcp.Tool{Name: "analytics_report", Description: "Read project analytics, traffic, events, goals, funnels, journeys, heatmaps, retention and campaign tools. API key fixes the project. Dates select sessions or first-visit cohorts. Journey is top 200 edges, properties top 500 values. Retention uses retained history and includes returns beyond cohort date range.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &closed}}, s.mcpReport)
-	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		p, _ := principalFrom(r.Context())
+		return s.mcpServer(p)
+	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			u, e := url.Parse(origin)
@@ -78,11 +161,11 @@ func (s *Server) mcpHandler() http.Handler {
 				return
 			}
 		}
-		pid, ok := s.bearerProject(w, r)
+		p, ok := s.tokenAuth(w, r)
 		if !ok {
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
-		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), analyticsProjectKey{}, pid)))
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
 	})
 }

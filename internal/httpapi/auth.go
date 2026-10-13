@@ -144,7 +144,7 @@ func (s *Server) csrf(next http.HandlerFunc) http.HandlerFunc {
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	a, _ := adminFrom(r.Context())
-	writeJSON(w, 200, map[string]any{"user_id": a.UserID, "username": a.Username, "csrf_token": a.CSRF, "expires_at": a.ExpiresAt, "is_owner": s.isOwner(a)})
+	writeJSON(w, 200, map[string]any{"user_id": a.UserID, "username": a.Username, "csrf_token": a.CSRF, "expires_at": a.ExpiresAt, "is_owner": s.isOwner(a), "mcp_enabled": s.cfg.MCPEnabled})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	a, _ := adminFrom(r.Context())

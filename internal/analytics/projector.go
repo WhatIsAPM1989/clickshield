@@ -91,7 +91,7 @@ func (p *Projector) projectOne(ctx context.Context, selected *string) (bool, err
 }
 
 func deleteProject(ctx context.Context, tx pgx.Tx, pid string) error {
-	for _, table := range []string{"sessions", "analytics_definitions", "analytics_api_keys", "tracked_links", "tracking_pixels", "tracking_hits", "analytics_annotations"} {
+	for _, table := range []string{"sessions", "analytics_definitions", "tracked_links", "tracking_pixels", "tracking_hits", "analytics_annotations"} {
 		if _, err := tx.Exec(ctx, "DELETE FROM analytics."+table+" WHERE project_id=$1", pid); err != nil {
 			return err
 		}

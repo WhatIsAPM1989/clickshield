@@ -28,7 +28,7 @@ function showPanel(meta){
   for(const id of ['export-report','interval-control','compare-control'])$('#'+id).classList.toggle('hidden',!!panel);
   $('#report-status').textContent=panel?`${fmtRange($('#date-from').value,$('#date-to').value)} · часовой пояс ${zone}`:'';
   if(panel==='product'){$('#product-kind').value=state.report;$('#new-definition').classList.toggle('hidden',!['goals','funnels'].includes(state.report));$('#product-kind').dispatchEvent(new Event('change'))}
-  if(panel==='tools'){$('#tool-kind').value=state.report;$('#new-tool').textContent=({links:'Создать ссылку',pixels:'Создать пиксель',annotations:'Добавить отметку',keys:'Выпустить ключ'})[state.report];$('#tool-kind').dispatchEvent(new Event('change'))}
+  if(panel==='tools'){$('#tool-kind').value=state.report;$('#new-tool').textContent=({links:'Создать ссылку',pixels:'Создать пиксель',annotations:'Добавить отметку'})[state.report];$('#tool-kind').dispatchEvent(new Event('change'))}
   return !!panel;
 }
 async function loadReport({keepSelection=false}={}){

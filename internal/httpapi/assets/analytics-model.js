@@ -90,7 +90,6 @@ const REPORTS={
   links:{group:'Инструменты',panel:'tools',title:'Короткие ссылки',short:'Короткие ссылки',description:'Ссылки /l/… для рассылок и офлайна: перенаправляют на сайт с UTM-метками и считают переходы.'},
   pixels:{group:'Инструменты',panel:'tools',title:'Пиксели',short:'Пиксели',description:'Прозрачный GIF 1×1 для писем и сторонних страниц. Считает запросы, включая автоматические проверки почтовых сервисов.'},
   annotations:{group:'Инструменты',panel:'tools',title:'Отметки на графике',short:'Отметки на графике',description:'Запуски кампаний, релизы и другие события — показываются на графиках отчётов.'},
-  keys:{group:'Инструменты',panel:'tools',title:'API-ключи',short:'API-ключи',description:'Ключи для чтения аналитики одного проекта через API и MCP. Ключ показывается один раз.'},
   metrika:{group:'Инструменты',panel:'metrika',title:'Сверка с Яндекс Метрикой',short:'Сверка с Метрикой',description:'Отчёты счётчика Метрики за тот же период — чтобы сравнить цифры с ClickShield.'},
 };
 const REPORT_DIMS={sources:['channel','source'],referrers:['referrer'],campaigns:['campaign','source','channel'],utm:['utm_source','utm_medium','utm_campaign','utm_content'],terms:['utm_term'],landing:['landing_url'],exit:['exit_page'],devices:['device','os'],browsers:['browser'],networks:['network'],geo:['country','region','city'],languages:['language'],daily:['day'],hours:['hour'],activity:['weekday','hour'],quality:['classification'],bots:['bot_category','bot']};

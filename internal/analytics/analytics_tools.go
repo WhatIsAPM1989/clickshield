@@ -2,7 +2,6 @@ package analytics
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"net/url"
 	"regexp"
@@ -10,66 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 )
-
-type AnalyticsAPIKey struct {
-	ID         string     `json:"id"`
-	ProjectID  string     `json:"project_id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	RevokedAt  *time.Time `json:"revoked_at"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-}
-
-func (s *Repository) CreateAnalyticsKey(ctx context.Context, pid, name string, days int) (AnalyticsAPIKey, string, error) {
-	var k AnalyticsAPIKey
-	if !ValidUUID(pid) || strings.TrimSpace(name) == "" || utf8.RuneCountInString(name) > 120 || days < 1 || days > 365 {
-		return k, "", errors.New("project, name and lifetime 1–365 days required")
-	}
-	token, e := Token(32)
-	if e != nil {
-		return k, "", e
-	}
-	token = "csak_" + token
-	id, e := UUID()
-	if e != nil {
-		return k, "", e
-	}
-	hash := sha256.Sum256([]byte(token))
-	k = AnalyticsAPIKey{ID: id, ProjectID: pid, Name: name, Prefix: token[:13], CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour)}
-	_, e = s.Pool.Exec(ctx, `INSERT INTO analytics.analytics_api_keys(id,project_id,name,token_hash,prefix,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, id, pid, name, hash[:], k.Prefix, k.ExpiresAt)
-	return k, token, e
-}
-func (s *Repository) AnalyticsKey(ctx context.Context, token string) (string, error) {
-	hash := sha256.Sum256([]byte(token))
-	var pid string
-	e := s.Pool.QueryRow(ctx, `UPDATE analytics.analytics_api_keys SET last_used_at=now() WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>now() RETURNING project_id::text`, hash[:]).Scan(&pid)
-	return pid, e
-}
-func (s *Repository) AnalyticsKeys(ctx context.Context, pid string) ([]AnalyticsAPIKey, error) {
-	rows, e := s.Pool.Query(ctx, `SELECT id::text,project_id::text,name,prefix,expires_at,created_at,revoked_at,last_used_at FROM analytics.analytics_api_keys WHERE project_id=$1 ORDER BY created_at DESC`, pid)
-	if e != nil {
-		return nil, e
-	}
-	defer rows.Close()
-	out := []AnalyticsAPIKey{}
-	for rows.Next() {
-		var k AnalyticsAPIKey
-		if e = rows.Scan(&k.ID, &k.ProjectID, &k.Name, &k.Prefix, &k.ExpiresAt, &k.CreatedAt, &k.RevokedAt, &k.LastUsedAt); e != nil {
-			return nil, e
-		}
-		out = append(out, k)
-	}
-	return out, rows.Err()
-}
-func (s *Repository) RevokeAnalyticsKey(ctx context.Context, pid, id string) error {
-	tag, e := s.Pool.Exec(ctx, `UPDATE analytics.analytics_api_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND project_id=$2`, id, pid)
-	if e == nil && tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return e
-}
 
 type TrackedLink struct {
 	ID          string `json:"id"`

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/lamooof/clickshield/internal/access"
 	"github.com/lamooof/clickshield/internal/analytics"
 	"github.com/lamooof/clickshield/internal/domain"
 	"io"
@@ -33,7 +34,20 @@ func (t keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.Header.Set("Authorization", "Bearer "+t.key)
 	return t.next.RoundTrip(r)
 }
-func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
+
+// apiEnv is a server on a dedicated test database with two projects and an admin.
+type apiEnv struct {
+	st       *store.Store
+	s        *Server
+	srv      *httptest.Server
+	p, other domain.Project
+	cookie   string
+	csrf     string
+	userID   string
+}
+
+func newAPIEnv(t *testing.T) *apiEnv {
+	t.Helper()
 	dsn := os.Getenv("CLICKSHIELD_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("dedicated PostgreSQL required")
@@ -43,26 +57,24 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	if e = st.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
+	env := &apiEnv{st: st}
 	cfg, _ := json.Marshal(scoring.DefaultConfig())
-	p, e := st.CreateProject(ctx, "HTTP analytics test", []string{"https://example.test"}, "MONITORING", cfg)
-	if e != nil {
-		t.Fatal(e)
+	for _, dst := range []*domain.Project{&env.p, &env.other} {
+		if *dst, e = st.CreateProject(ctx, "HTTP API test", []string{"https://example.test"}, "MONITORING", cfg); e != nil {
+			t.Fatal(e)
+		}
+		id := dst.ID
+		t.Cleanup(func() { st.Pool.Exec(ctx, `DELETE FROM projects WHERE id=$1`, id) })
 	}
-	defer st.Pool.Exec(ctx, `DELETE FROM projects WHERE id=$1`, p.ID)
-	other, e := st.CreateProject(ctx, "Other HTTP project", []string{"https://other.test"}, "MONITORING", cfg)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer st.Pool.Exec(ctx, `DELETE FROM projects WHERE id=$1`, other.ID)
 	username, _ := store.Token(9)
 	if e = st.EnsureAdmin(ctx, username, "test-password-12345"); e != nil {
 		t.Fatal(e)
 	}
-	defer st.Pool.Exec(ctx, `DELETE FROM admin_users WHERE username=$1`, username)
+	t.Cleanup(func() { st.Pool.Exec(ctx, `DELETE FROM admin_users WHERE username=$1`, username) })
 	admin, e := st.Authenticate(ctx, username, "test-password-12345")
 	if e != nil {
 		t.Fatal(e)
@@ -71,39 +83,70 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	env.cookie, env.csrf, env.userID = cookie, a.CSRF, admin.UserID
 	cipher, _ := cryptox.New(bytes.Repeat([]byte("x"), 32))
-	s := New(config.Config{MCPEnabled: true}, st, nil, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv := httptest.NewServer(s.Handler())
-	defer srv.Close()
+	env.s = New(config.Config{MCPEnabled: true}, st, nil, cipher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv = httptest.NewServer(env.s.Handler())
+	t.Cleanup(env.srv.Close)
+	return env
+}
+
+// call sends a request as the admin (cookie + CSRF) or with a Bearer token.
+func (env *apiEnv) call(t *testing.T, method, path string, body any, token string, admin bool) (int, map[string]any) {
+	t.Helper()
+	var raw []byte
+	if body != nil {
+		raw, _ = json.Marshal(body)
+	}
+	r, _ := http.NewRequest(method, env.srv.URL+path, bytes.NewReader(raw))
+	if admin {
+		r.AddCookie(&http.Cookie{Name: "clickshield_session", Value: env.cookie})
+		r.Header.Set("X-CSRF-Token", env.csrf)
+	}
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	res, e := http.DefaultClient.Do(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer res.Body.Close()
+	var data map[string]any
+	json.NewDecoder(res.Body).Decode(&data)
+	return res.StatusCode, data
+}
+
+// token issues an API token from the panel and returns its id and raw value.
+func (env *apiEnv) token(t *testing.T, project string, scopes ...string) (string, string) {
+	t.Helper()
+	code, data := env.call(t, "POST", "/v1/api-tokens", map[string]any{"name": "test", "project_id": project, "scopes": scopes, "days": 1}, "", true)
+	if code != 201 {
+		t.Fatalf("create token: %d %+v", code, data)
+	}
+	return data["token"].(map[string]any)["id"].(string), data["raw"].(string)
+}
+
+// mcpSession connects the real SDK client with a Bearer token.
+func (env *apiEnv) mcpSession(t *testing.T, token string) *mcp.ClientSession {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, e := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: env.srv.URL + "/mcp", HTTPClient: &http.Client{Transport: keyTransport{token, http.DefaultTransport}}}, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { session.Close() })
+	return session
+}
+
+func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
+	env := newAPIEnv(t)
+	ctx := context.Background()
+	st, p, other := env.st, env.p, env.other
 	call := func(method, path string, body any, key string, admin bool) (int, map[string]any) {
 		t.Helper()
-		var raw []byte
-		if body != nil {
-			raw, _ = json.Marshal(body)
-		}
-		r, _ := http.NewRequest(method, srv.URL+path, bytes.NewReader(raw))
-		if admin {
-			r.AddCookie(&http.Cookie{Name: "clickshield_session", Value: cookie})
-			r.Header.Set("X-CSRF-Token", a.CSRF)
-		}
-		if key != "" {
-			r.Header.Set("Authorization", "Bearer "+key)
-		}
-		res, e := http.DefaultClient.Do(r)
-		if e != nil {
-			t.Fatal(e)
-		}
-		defer res.Body.Close()
-		var data map[string]any
-		json.NewDecoder(res.Body).Decode(&data)
-		return res.StatusCode, data
+		return env.call(t, method, path, body, key, admin)
 	}
-	code, data := call("POST", "/v1/projects/"+p.ID+"/analytics-keys", map[string]any{"name": "SDK", "days": 1}, "", true)
-	if code != 201 {
-		t.Fatalf("create key: %d %+v", code, data)
-	}
-	token := data["token"].(string)
-	keyID := data["key"].(map[string]any)["id"].(string)
+	keyID, token := env.token(t, p.ID, access.AnalyticsRead)
 	if code, _ := call("GET", "/v1/reports?report=sources", nil, token, false); code != 200 {
 		t.Fatalf("scoped default: %d", code)
 	}
@@ -112,27 +155,27 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 			t.Fatalf("cross-project read %s: %d", path, code)
 		}
 	}
-	if code, _ := call("GET", "/v1/sessions", nil, token, false); code != 401 {
-		t.Fatalf("key exposed sessions: %d", code)
+	if code, _ := call("GET", "/v1/sessions", nil, token, false); code != 403 {
+		t.Fatalf("token without scope read sessions: %d", code)
 	}
-	if code, _ := call("POST", "/v1/projects/"+p.ID+"/definitions", map[string]any{}, token, false); code != 401 {
-		t.Fatalf("key can write: %d", code)
+	if code, _ := call("POST", "/v1/projects/"+p.ID+"/definitions", map[string]any{}, token, false); code != 403 {
+		t.Fatalf("read token can write: %d", code)
 	}
-	_, data = call("GET", "/v1/projects/"+p.ID+"/analytics-keys", nil, "", true)
+	_, data := call("GET", "/v1/api-tokens", nil, "", true)
 	encoded, _ := json.Marshal(data)
 	if strings.Contains(string(encoded), token) || strings.Contains(string(encoded), "token_hash") {
-		t.Fatal("key list leaks secrets")
+		t.Fatal("token list leaks secrets")
 	}
 	// Expired credentials are rejected independently of revocation.
-	_, expired, e := s.analytics.Repository.CreateAnalyticsKey(ctx, p.ID, "expired", 1)
+	expiredToken, expired, e := st.CreateAPIToken(ctx, "", "expired", p.ID, []string{access.AnalyticsRead}, 1)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = st.Pool.Exec(ctx, `UPDATE analytics.analytics_api_keys SET expires_at=now()-interval '1 second' WHERE project_id=$1 AND name='expired'`, p.ID); e != nil {
+	if _, e = st.Pool.Exec(ctx, `UPDATE api_tokens SET expires_at=now()-interval '1 second' WHERE id=$1`, expiredToken.ID); e != nil {
 		t.Fatal(e)
 	}
 	if code, _ := call("GET", "/v1/reports", nil, expired, false); code != 401 {
-		t.Fatalf("expired key accepted: %d", code)
+		t.Fatalf("expired token accepted: %d", code)
 	}
 
 	sid, _ := store.UUID()
@@ -156,13 +199,9 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 		t.Fatal(code, httpEvents)
 	}
 	// Real SDK client negotiates MCP and calls a project-bound tool.
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-	session, e := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: srv.URL + "/mcp", HTTPClient: &http.Client{Transport: keyTransport{token, http.DefaultTransport}}}, nil)
-	if e != nil {
-		t.Fatal(e)
-	}
+	session := env.mcpSession(t, token)
 	tools, e := session.ListTools(ctx, nil)
-	if e != nil || len(tools.Tools) != 1 {
+	if e != nil || len(tools.Tools) != 5 {
 		t.Fatalf("MCP tools: %+v %v", tools, e)
 	}
 	result, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "analytics_report", Arguments: map[string]any{"report": "events"}})
@@ -186,8 +225,7 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 			t.Fatalf("invalid query accepted: %s %d", path, code)
 		}
 	}
-	session.Close()
-	r, _ := http.NewRequest("POST", srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	r, _ := http.NewRequest("POST", env.srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Origin", "https://attacker.test")
 	res, e := http.DefaultClient.Do(r)
@@ -206,7 +244,7 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 	link := data["data"].(map[string]any)
 	slug := link["slug"].(string)
 	redirectClient := http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	res, e = redirectClient.Get(srv.URL + "/l/" + slug)
+	res, e = redirectClient.Get(env.srv.URL + "/l/" + slug)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -214,7 +252,7 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 	if res.StatusCode != 302 || res.Header.Get("Location") != "https://example.test/?utm_source=mail" {
 		t.Fatalf("redirect: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
-	r, _ = http.NewRequest("HEAD", srv.URL+"/l/"+slug, nil)
+	r, _ = http.NewRequest("HEAD", env.srv.URL+"/l/"+slug, nil)
 	res, e = redirectClient.Do(r)
 	if e != nil {
 		t.Fatal(e)
@@ -229,7 +267,7 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 		t.Fatalf("create pixel: %d %+v", code, data)
 	}
 	pixel := data["data"].(map[string]any)["id"].(string)
-	res, e = http.Get(srv.URL + "/p/" + pixel)
+	res, e = http.Get(env.srv.URL + "/p/" + pixel)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -245,7 +283,7 @@ func TestAnalyticsAccessAndCampaignTools(t *testing.T) {
 	if code, _ = call("DELETE", "/v1/projects/"+other.ID+"/tools/links/"+link["id"].(string), nil, "", true); code != 404 {
 		t.Fatalf("cross-project delete: %d", code)
 	}
-	if code, _ = call("DELETE", "/v1/projects/"+p.ID+"/analytics-keys/"+keyID, nil, "", true); code != 200 {
+	if code, _ = call("DELETE", "/v1/api-tokens/"+keyID, nil, "", true); code != 200 {
 		t.Fatalf("revoke: %d", code)
 	}
 	if code, _ = call("GET", "/v1/reports", nil, token, false); code != 401 {

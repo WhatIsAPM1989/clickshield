@@ -1,0 +1,19 @@
+'use strict';
+// "API и MCP" tab: API tokens with scopes and connection snippets. Uses api/toast/esc/fmtDate/state from admin.js.
+const scopeAreas=[['analytics','Аналитика','отчёты, цели и воронки, ссылки, пиксели, отметки'],['sessions','Сессии','визиты с IP и fingerprint, статистика, разметка, исходы заявок'],['replay','Записи сессий','просмотр и удаление записей'],['projects','Проекты','настройки, интеграции и их секреты, Метрика, состояние сервиса']];
+let issuedToken='';
+$('#api-scopes').innerHTML=scopeAreas.map(([k,t,d])=>`<tr><td><b>${t}</b><div class="muted">${d}</div></td><td><input type="checkbox" value="${k}:read" ${k==='analytics'?'checked':''} aria-label="${t}: чтение"></td><td><input type="checkbox" value="${k}:write" aria-label="${t}: запись"></td></tr>`).join('');
+// Write implies read: keep the pair consistent.
+$('#api-scopes').onchange=e=>{const [area,mode]=e.target.value.split(':'),pair=$(`#api-scopes input[value="${area}:${mode==='write'?'read':'write'}"]`);if(mode==='write'&&e.target.checked)pair.checked=true;if(mode==='read'&&!e.target.checked)pair.checked=false};
+function renderSnippets(){const token=issuedToken||'YOUR_TOKEN',o=location.origin;
+$('#mcp-status').textContent=state.mcp?`MCP включён: ${o}/mcp (Streamable HTTP, заголовок Authorization: Bearer).`:'MCP выключен на сервере: задайте MCP_ENABLED=true. HTTP API работает.';
+$('#snip-curl').textContent=`curl -H 'Authorization: Bearer ${token}' '${o}/v1/analytics/events'`;
+$('#snip-claude').textContent=`claude mcp add --transport http clickshield ${o}/mcp --header "Authorization: Bearer ${token}"`;
+$('#snip-json').textContent=JSON.stringify({mcpServers:{clickshield:{type:'http',url:`${o}/mcp`,headers:{Authorization:`Bearer ${token}`}}}},null,2)}
+async function loadTokens(){const r=await api('/v1/api-tokens'),now=new Date();
+$('#api-tokens').innerHTML=r.tokens.length?r.tokens.map(t=>{const status=t.revoked_at?'Отозван':new Date(t.expires_at)<now?'Истёк':'';return `<tr${status?' class="muted"':''}><td>${esc(t.name)}<div class="muted code">${esc(t.prefix)}…</div></td><td>${t.project_id?esc(t.project_name):'Все проекты'}</td><td>${t.scopes.map(esc).join('<br>')}</td><td>${esc(t.created_by||'—')}</td><td>${fmtDate(t.expires_at)}</td><td>${fmtDate(t.last_used_at)}</td><td>${status||`<button data-revoke-token="${esc(t.id)}" type="button">Отозвать</button>`}</td></tr>`}).join(''):'<tr><td colspan="7" class="empty">Токенов пока нет.</td></tr>'}
+$('#api-form').onsubmit=async e=>{e.preventDefault();const scopes=[...document.querySelectorAll('#api-scopes input:checked')].map(i=>i.value);
+try{const r=await api('/v1/api-tokens',{method:'POST',body:{name:$('#api-name').value,project_id:$('#api-project').value,scopes,days:Number($('#api-days').value)}});issuedToken=r.raw;$('#api-token').value=r.raw;$('#api-issued').classList.remove('hidden');$('#api-name').value='';renderSnippets();await loadTokens();toast('Токен выпущен')}catch(err){toast(err.message,true)}};
+$('#api-tokens').onclick=async e=>{const id=e.target.dataset.revokeToken;if(!id||!confirm('Отозвать токен? Скрипты и агенты с ним потеряют доступ.'))return;try{await api(`/v1/api-tokens/${id}`,{method:'DELETE'});await loadTokens()}catch(err){toast(err.message,true)}};
+$('#view-api').addEventListener('click',e=>{const id=e.target.dataset.copy;if(!id)return;const el=document.getElementById(id);navigator.clipboard.writeText(el.value??el.textContent).then(()=>toast('Скопировано'),()=>toast('Скопируйте вручную',true))});
+document.querySelector('[data-view="api"]').addEventListener('click',()=>{const sel=$('#api-project'),value=sel.value;sel.innerHTML='<option value="">Все проекты</option>'+state.projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');sel.value=value;renderSnippets();loadTokens().catch(e=>toast(e.message,true))});

@@ -29,7 +29,7 @@ services:
       REPLAY_S3_ACCESS_KEY: "${REPLAY_S3_ACCESS_KEY:-}"
       REPLAY_S3_SECRET_KEY: "${REPLAY_S3_SECRET_KEY:-}"
       REPLAY_S3_REGION: "${REPLAY_S3_REGION:-us-east-1}"
-      MCP_ENABLED: "${MCP_ENABLED:-false}"
+      MCP_ENABLED: "${MCP_ENABLED:-true}"
       GEOIP_CITY_DATABASE: "${GEOIP_CITY_DATABASE:-}"
       HTTP_ADDR: ":8080"
       DATABASE_URL: postgres://clickshield:${POSTGRES_PASSWORD}@postgres:5432/clickshield?sslmode=disable

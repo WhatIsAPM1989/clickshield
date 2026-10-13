@@ -300,11 +300,6 @@
 .rp-error{margin:0;color:var(--rp-bad);font-size:.85rem}
 .rp-error:empty{display:none}
 .rp-dialog-foot{display:flex;justify-content:flex-end}
-.rp-key-result{display:grid;gap:10px;padding:14px 16px;background:#fff9e8;border-bottom:1px solid #f3e2b3}
-.rp-key-result[hidden]{display:none}
-.rp-key-result label{display:grid;gap:6px;font-size:.85rem;font-weight:600}
-.rp-key-result textarea{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #e6d29c;border-radius:8px;padding:8px;resize:none}
-.rp-key-result div{display:flex;gap:8px}
 .rp-pill{display:inline-block;font-size:.7rem;font-weight:650;border-radius:999px;padding:.12rem .5rem;margin-left:6px;vertical-align:1px}
 .rp-pill.on{background:var(--rp-good-wash);color:var(--rp-good)}
 .rp-pill.off{background:#eef0f5;color:var(--rp-muted)}

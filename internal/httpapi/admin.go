@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,9 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		writeError(w, 500, "could not load projects")
 		return
+	}
+	if p, ok := principalFrom(r.Context()); ok && p.ProjectID != "" {
+		items = slices.DeleteFunc(items, func(x domain.Project) bool { return x.ID != p.ProjectID })
 	}
 	writeJSON(w, 200, map[string]any{"projects": items})
 }
@@ -265,6 +269,10 @@ func (s *Server) testIntegration(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(w, r, &req, 4096); err != nil || !store.ValidUUID(req.SessionID) {
 		writeError(w, 422, "valid session_id required")
+		return
+	}
+	if pid, e := s.store.SessionProject(r.Context(), req.SessionID); e != nil || pid != projectID {
+		writeError(w, 404, "session not found in this project")
 		return
 	}
 	provider := strings.ToLower(r.PathValue("provider"))

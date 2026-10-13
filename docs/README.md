@@ -11,7 +11,8 @@
 | Настроить режимы и оценку риска | [Scoring](scoring.md) |
 | Подключить Метрику, GA4, VK или результаты заявок | [Интеграции](integrations.md) |
 | Работать с трафиком и записью сессий | [Аналитика и replay](analytics-replay.md) |
-| Создать события, цели, карты, API-ключи или MCP | [Продуктовая аналитика](product-analytics.md), [SDK](../sdk/README.md) |
+| Создать события, цели, карты | [Продуктовая аналитика](product-analytics.md) |
+| Выпустить API-токен, подключить ИИ-агента по MCP | [API-токены](api.md#api-токены), [MCP](mcp.md), [SDK](../sdk/README.md) |
 | Использовать HTTP API | [Авторизация и маршруты](api.md), [OpenAPI](openapi.yaml) |
 | Настроить хранение и исключить приватные данные | [Приватность](privacy.md), [SECURITY](../SECURITY.md) |
 | Проверить установку | [Чек-лист](validation.md) |

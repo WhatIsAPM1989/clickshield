@@ -2,7 +2,7 @@
 export class ClickShieldAnalytics {
  constructor({baseURL,apiKey,fetch:fetcher=globalThis.fetch}) {
   const u=new URL(baseURL);if(!['http:','https:'].includes(u.protocol)||u.username||u.password)throw new TypeError('HTTP(S) baseURL required');
-  if(typeof apiKey!=='string'||!apiKey.startsWith('csak_'))throw new TypeError('Analytics API key required');
+  if(typeof apiKey!=='string'||!/^(cst|csak)_/.test(apiKey))throw new TypeError('ClickShield API token required');
   this.baseURL=u.toString().replace(/\/$/,'');this.apiKey=apiKey;this.fetch=fetcher;
  }
  async request(path,filters={},options={}) {

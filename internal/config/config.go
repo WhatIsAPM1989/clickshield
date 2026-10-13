@@ -61,7 +61,7 @@ func LoadFor(command string) (Config, error) {
 		GoogleMeasurementID:     strings.TrimSpace(os.Getenv("GOOGLE_MEASUREMENT_ID")),
 		GoogleAPISecret:         strings.TrimSpace(os.Getenv("GOOGLE_API_SECRET")),
 		GeoCityDatabase:         strings.TrimSpace(os.Getenv("GEOIP_CITY_DATABASE")),
-		MCPEnabled:              boolEnv("MCP_ENABLED", false),
+		MCPEnabled:              boolEnv("MCP_ENABLED", true),
 		ASNDatabase:             getenv("ASN_DATABASE", "/app/ip2asn.tsv.gz"),
 		WorkerInterval:          5 * time.Second,
 	}

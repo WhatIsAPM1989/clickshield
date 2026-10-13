@@ -9,7 +9,7 @@
 | Браузерный tracker | Публичный ключ проекта и разрешённый Origin |
 | Администратор | Cookie `clickshield_session`; для изменений — `X-CSRF-Token` |
 | Сервер сайта | `OUTCOME_API_TOKEN` только для записи исходов заявок |
-| Клиент аналитики / MCP | Приватный analytics Bearer key, чтение одного проекта |
+| Скрипт, SDK, ИИ-агент (MCP) | API-токен `Authorization: Bearer cst_…`: права и один или все проекты |
 
 Вход: `POST /login` с `application/x-www-form-urlencoded`, полями `username` и
 `password`. Ответ перенаправляет на `/` при успехе либо `/login?error=1` при неверных
@@ -36,9 +36,39 @@ POST   /v1/users/{id}/active    {"active": false|true}; отключение з�
 пользователя с логином = email и открывает сессию на 12 часов. Ошибки возвращаются
 редиректом на `/invite/{token}?error=invalid|email|short|mismatch|exists`.
 
-Analytics key создаётся в панели и показывается один раз. Его нельзя использовать
-для административных изменений или чтения replay. [SDK](../sdk/README.md) и
-[MCP](product-analytics.md) используют этот тип ключа.
+### API-токены
+
+Токен выпускает любой администратор в панели, раздел «API и MCP». Он показывается
+один раз, в БД хранится SHA-256. Токен привязан к одному проекту или ко всем,
+действует 1–365 дней и перестаёт работать после отзыва или отключения выпустившего
+пользователя. Ключи `csak_…` прежних версий продолжают работать с правом `analytics:read`.
+
+| Право | Маршруты |
+|---|---|
+| `analytics:read` | `GET /v1/analytics/{kind}`, `/v1/traffic`, `/v1/reports`, `/v1/reports/timeline`, `GET /v1/projects/{id}/definitions`, `GET /v1/projects/{id}/tools/{kind}` |
+| `analytics:write` | `POST/PUT/DELETE` целей, воронок, ссылок, пикселей и отметок |
+| `sessions:read` | `GET /v1/sessions`, `/v1/sessions/export.csv`, `/v1/sessions/{id}`, `/v1/stats`, `/v1/bots`, `/v1/quality` |
+| `sessions:write` | `POST /v1/sessions/{id}/label`, `/v1/sessions/{id}/outcomes` |
+| `replay:read`, `replay:write` | `GET`, `DELETE /v1/sessions/{id}/replay` |
+| `projects:read` | `GET /v1/projects`, `/v1/projects/{id}/integrations`, `/metrika-read`, `/metrika-report`, `/v1/outbox`, `/v1/operations` |
+| `projects:write` | `POST /v1/projects`, `PUT /v1/projects/{id}`, `/replay`, `/integrations/{provider}`, `POST …/test`, `PUT/DELETE /metrika-read` |
+
+Право записи включает чтение той же области. Без нужного права — 403, без
+действующего токена — 401. С токеном CSRF-заголовок не нужен. Токен одного проекта:
+`project_id` в запросе можно опустить, чужой проект — 403, чужая сессия — 404;
+`/v1/outbox`, `/v1/operations` и создание проекта доступны только токену всех
+проектов. `GET /v1/projects` возвращает токену только его проект. Изменения через
+токен пишутся в аудит (`API_TOKEN_REQUEST`) от имени выпустившего пользователя.
+
+Пользователи, приглашения, `/v1/me` и сами токены доступны только из панели:
+
+```text
+GET    /v1/api-tokens           список (без секретов) и перечень прав
+POST   /v1/api-tokens           {name, project_id|"", scopes[], days}; ответ {token, raw}, raw показывается один раз
+DELETE /v1/api-tokens/{id}      отозвать
+```
+
+[SDK](../sdk/README.md) и [MCP](mcp.md) используют эти токены.
 
 ## Основные маршруты
 
@@ -80,9 +110,7 @@ GET  /v1/outbox
 ```
 
 Отчёты: `GET /v1/traffic`, `/v1/reports`, `/v1/reports/timeline`,
-`/v1/analytics/{kind}`. Чтение доступно администратору или ключу аналитики своего
-проекта. Настройки replay, целей, инструментов и analytics keys меняет администратор.
-Чтение/удаление записей сессий и подключение чтения Метрики требуют admin cookie.
+`/v1/analytics/{kind}`. Доступны администратору или токену с `analytics:read`.
 
 `from` включительно, `to` исключительно; передавайте даты с часовым поясом,
 а для календарных группировок — `timezone`. Фильтры и схемы ответов описаны в OpenAPI.

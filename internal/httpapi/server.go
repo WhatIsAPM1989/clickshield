@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lamooof/clickshield/internal/access"
 	"github.com/lamooof/clickshield/internal/config"
 	"github.com/lamooof/clickshield/internal/cryptox"
 	"github.com/lamooof/clickshield/internal/integration"
@@ -135,34 +136,17 @@ func (s *Server) routes() {
 	if s.cfg.MCPEnabled {
 		s.mux.Handle("/mcp", s.mcpHandler())
 	}
+	s.publicRoutes()
+	s.panelRoutes()
+	s.apiRoutes()
+}
+func (s *Server) publicRoutes() {
+	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /l/{slug}", s.shortLink)
 	s.mux.HandleFunc("GET /p/{pixel}", s.pixel)
-	s.mux.HandleFunc("GET /v1/projects/{id}/analytics-keys", s.requireAPI(s.analyticsKeys))
-	s.mux.HandleFunc("POST /v1/projects/{id}/analytics-keys", s.requireAPI(s.csrf(s.analyticsKeys)))
-	s.mux.HandleFunc("DELETE /v1/projects/{id}/analytics-keys/{key}", s.requireAPI(s.csrf(s.revokeAnalyticsKey)))
-	s.mux.HandleFunc("GET /v1/projects/{id}/tools/{kind}", s.requireAnalytics(s.analyticsTools))
-	s.mux.HandleFunc("POST /v1/projects/{id}/tools/{kind}", s.requireAPI(s.csrf(s.analyticsTools)))
-	s.mux.HandleFunc("PUT /v1/projects/{id}/tools/{kind}/{tool}", s.requireAPI(s.csrf(s.analyticsTools)))
-	s.mux.HandleFunc("DELETE /v1/projects/{id}/tools/{kind}/{tool}", s.requireAPI(s.csrf(s.analyticsTools)))
-	s.mux.HandleFunc("GET /v1/analytics/{kind}", s.requireAnalytics(s.productReport))
-	s.mux.HandleFunc("GET /v1/projects/{id}/definitions", s.requireAnalytics(s.definitions))
-	s.mux.HandleFunc("POST /v1/projects/{id}/definitions", s.requireAPI(s.csrf(s.saveDefinition)))
-	s.mux.HandleFunc("PUT /v1/projects/{id}/definitions/{definition}", s.requireAPI(s.csrf(s.saveDefinition)))
-	s.mux.HandleFunc("DELETE /v1/projects/{id}/definitions/{definition}", s.requireAPI(s.csrf(s.deleteDefinition)))
-	s.mux.HandleFunc("GET /healthz", s.health)
-	s.mux.HandleFunc("GET /v1/projects/{id}/metrika-read", s.requireAPI(s.metrikaConnection))
-	s.mux.HandleFunc("PUT /v1/projects/{id}/metrika-read", s.requireAPI(s.csrf(s.saveMetrikaConnection)))
-	s.mux.HandleFunc("DELETE /v1/projects/{id}/metrika-read", s.requireAPI(s.csrf(s.deleteMetrikaConnection)))
-	s.mux.HandleFunc("GET /v1/projects/{id}/metrika-report", s.requireAPI(s.metrikaReport))
 	s.mux.HandleFunc("GET /v1/tracker/config", s.trackerConfig)
 	s.mux.HandleFunc("OPTIONS /v1/replay", s.preflight)
 	s.mux.HandleFunc("POST /v1/replay", s.replayIngest)
-	s.mux.HandleFunc("GET /v1/traffic", s.requireAnalytics(s.trafficReport))
-	s.mux.HandleFunc("GET /v1/reports", s.requireAnalytics(s.aggregateReport))
-	s.mux.HandleFunc("GET /v1/reports/timeline", s.requireAnalytics(s.reportTimeline))
-	s.mux.HandleFunc("PUT /v1/projects/{id}/replay", s.requireAPI(s.csrf(s.replaySettings)))
-	s.mux.HandleFunc("GET /v1/sessions/{id}/replay", s.requireAPI(s.replayData))
-	s.mux.HandleFunc("DELETE /v1/sessions/{id}/replay", s.requireAPI(s.csrf(s.deleteReplay)))
 	s.mux.HandleFunc("GET /tracker.js", s.tracker)
 	s.mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/assets/favicon.svg", http.StatusFound)
@@ -172,13 +156,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("OPTIONS /v1/session/finish", s.preflight)
 	s.mux.HandleFunc("POST /v1/session/finish", s.finish)
 	s.mux.HandleFunc("POST /v1/outcomes", s.serverOutcome)
+	s.mux.HandleFunc("GET /assets/{name}", s.asset)
+}
+
+// panelRoutes are reachable only with an admin cookie, never with an API token.
+func (s *Server) panelRoutes() {
 	s.mux.HandleFunc("GET /login", s.loginPage)
 	s.mux.HandleFunc("POST /login", s.login)
 	s.mux.HandleFunc("GET /invite/{token}", s.invitePage)
 	s.mux.HandleFunc("POST /invite/{token}", s.acceptInvite)
 	s.mux.HandleFunc("GET /{$}", s.requirePage(s.index))
 	s.mux.HandleFunc("GET /analytics", s.requirePage(s.analyticsPage))
-	s.mux.HandleFunc("GET /assets/{name}", s.asset)
 	s.mux.HandleFunc("GET /v1/me", s.requireAPI(s.me))
 	s.mux.HandleFunc("POST /logout", s.requireAPI(s.csrf(s.logout)))
 	s.mux.HandleFunc("GET /v1/invites", s.requireAPI(s.requireOwner(s.invites)))
@@ -186,22 +174,53 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /v1/invites/{id}", s.requireAPI(s.requireOwner(s.csrf(s.deleteInvite))))
 	s.mux.HandleFunc("GET /v1/users", s.requireAPI(s.requireOwner(s.users)))
 	s.mux.HandleFunc("POST /v1/users/{id}/active", s.requireAPI(s.requireOwner(s.csrf(s.setUserActive))))
-	s.mux.HandleFunc("GET /v1/projects", s.requireAPI(s.projects))
-	s.mux.HandleFunc("POST /v1/projects", s.requireAPI(s.csrf(s.createProject)))
-	s.mux.HandleFunc("PUT /v1/projects/{id}", s.requireAPI(s.csrf(s.updateProject)))
-	s.mux.HandleFunc("GET /v1/projects/{id}/integrations", s.requireAPI(s.integrations))
-	s.mux.HandleFunc("PUT /v1/projects/{id}/integrations/{provider}", s.requireAPI(s.csrf(s.updateIntegration)))
-	s.mux.HandleFunc("POST /v1/projects/{id}/integrations/{provider}/test", s.requireAPI(s.csrf(s.testIntegration)))
-	s.mux.HandleFunc("GET /v1/sessions", s.requireAPI(s.sessions))
-	s.mux.HandleFunc("GET /v1/sessions/export.csv", s.requireAPI(s.exportSessions))
-	s.mux.HandleFunc("GET /v1/sessions/{id}", s.requireAPI(s.session))
-	s.mux.HandleFunc("POST /v1/sessions/{id}/label", s.requireAPI(s.csrf(s.label)))
-	s.mux.HandleFunc("GET /v1/stats", s.requireAPI(s.stats))
-	s.mux.HandleFunc("GET /v1/bots", s.requireAPI(s.botStats))
-	s.mux.HandleFunc("GET /v1/quality", s.requireAPI(s.quality))
-	s.mux.HandleFunc("POST /v1/sessions/{id}/outcomes", s.requireAPI(s.csrf(s.adminOutcome)))
-	s.mux.HandleFunc("GET /v1/outbox", s.requireAPI(s.outbox))
-	s.mux.HandleFunc("GET /v1/operations", s.requireAPI(s.operations))
+	s.mux.HandleFunc("GET /v1/api-tokens", s.requireAPI(s.apiTokens))
+	s.mux.HandleFunc("POST /v1/api-tokens", s.requireAPI(s.csrf(s.createAPIToken)))
+	s.mux.HandleFunc("DELETE /v1/api-tokens/{id}", s.requireAPI(s.csrf(s.revokeAPIToken)))
+}
+
+// apiRoutes accept an admin cookie or an API token with the named scope.
+func (s *Server) apiRoutes() {
+	route := func(pattern, scope string, t target, h http.HandlerFunc) {
+		s.mux.HandleFunc(pattern, s.guard(scope, t, h))
+	}
+	route("GET /v1/analytics/{kind}", access.AnalyticsRead, byQuery, s.productReport)
+	route("GET /v1/traffic", access.AnalyticsRead, byQuery, s.trafficReport)
+	route("GET /v1/reports", access.AnalyticsRead, byQuery, s.aggregateReport)
+	route("GET /v1/reports/timeline", access.AnalyticsRead, byQuery, s.reportTimeline)
+	route("GET /v1/projects/{id}/definitions", access.AnalyticsRead, byPath, s.definitions)
+	route("POST /v1/projects/{id}/definitions", access.AnalyticsWrite, byPath, s.saveDefinition)
+	route("PUT /v1/projects/{id}/definitions/{definition}", access.AnalyticsWrite, byPath, s.saveDefinition)
+	route("DELETE /v1/projects/{id}/definitions/{definition}", access.AnalyticsWrite, byPath, s.deleteDefinition)
+	route("GET /v1/projects/{id}/tools/{kind}", access.AnalyticsRead, byPath, s.analyticsTools)
+	route("POST /v1/projects/{id}/tools/{kind}", access.AnalyticsWrite, byPath, s.analyticsTools)
+	route("PUT /v1/projects/{id}/tools/{kind}/{tool}", access.AnalyticsWrite, byPath, s.analyticsTools)
+	route("DELETE /v1/projects/{id}/tools/{kind}/{tool}", access.AnalyticsWrite, byPath, s.analyticsTools)
+
+	route("GET /v1/sessions", access.SessionsRead, byQuery, s.sessions)
+	route("GET /v1/sessions/export.csv", access.SessionsRead, byQuery, s.exportSessions)
+	route("GET /v1/sessions/{id}", access.SessionsRead, bySession, s.session)
+	route("GET /v1/stats", access.SessionsRead, byQuery, s.stats)
+	route("GET /v1/bots", access.SessionsRead, byQuery, s.botStats)
+	route("GET /v1/quality", access.SessionsRead, byQuery, s.quality)
+	route("POST /v1/sessions/{id}/label", access.SessionsWrite, bySession, s.label)
+	route("POST /v1/sessions/{id}/outcomes", access.SessionsWrite, bySession, s.adminOutcome)
+	route("GET /v1/sessions/{id}/replay", access.ReplayRead, bySession, s.replayData)
+	route("DELETE /v1/sessions/{id}/replay", access.ReplayWrite, bySession, s.deleteReplay)
+
+	route("GET /v1/projects", access.ProjectsRead, byQuery, s.projects)
+	route("POST /v1/projects", access.ProjectsWrite, global, s.createProject)
+	route("PUT /v1/projects/{id}", access.ProjectsWrite, byPath, s.updateProject)
+	route("PUT /v1/projects/{id}/replay", access.ProjectsWrite, byPath, s.replaySettings)
+	route("GET /v1/projects/{id}/integrations", access.ProjectsRead, byPath, s.integrations)
+	route("PUT /v1/projects/{id}/integrations/{provider}", access.ProjectsWrite, byPath, s.updateIntegration)
+	route("POST /v1/projects/{id}/integrations/{provider}/test", access.ProjectsWrite, byPath, s.testIntegration)
+	route("GET /v1/projects/{id}/metrika-read", access.ProjectsRead, byPath, s.metrikaConnection)
+	route("PUT /v1/projects/{id}/metrika-read", access.ProjectsWrite, byPath, s.saveMetrikaConnection)
+	route("DELETE /v1/projects/{id}/metrika-read", access.ProjectsWrite, byPath, s.deleteMetrikaConnection)
+	route("GET /v1/projects/{id}/metrika-report", access.ProjectsRead, byPath, s.metrikaReport)
+	route("GET /v1/outbox", access.ProjectsRead, global, s.outbox)
+	route("GET /v1/operations", access.ProjectsRead, global, s.operations)
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
