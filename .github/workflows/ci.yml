@@ -60,6 +60,10 @@ jobs:
           cat "$RUNNER_TEMP/minio.log"
           exit 1
       - run: make check
+      - name: Verify invitation registration in Chromium and WebKit
+        run: |
+          npx playwright install --with-deps chromium webkit
+          CLICKSHIELD_BROWSER_TESTS=1 go test ./internal/httpapi -run TestInviteBrowserRegistration -count=1 -v
       - run: make build
       - name: Verify embedded replay bundles
         run: |
