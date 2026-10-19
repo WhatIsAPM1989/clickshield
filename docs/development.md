@@ -49,6 +49,17 @@ docker rm -f clickshield-test-db
 GitHub Actions поднимает PostgreSQL 17 и запускает `make check` с тестовым DSN;
 поэтому проверки хранилища и HTTP API не пропускаются.
 
+Регистрацию по приглашению можно проверить настоящей формой в Chromium и WebKit:
+
+```bash
+npx playwright install --with-deps chromium webkit
+CLICKSHIELD_BROWSER_TESTS=1 go test ./internal/httpapi -run TestInviteBrowserRegistration -count=1 -v
+```
+
+Нужен тот же `CLICKSHIELD_TEST_DATABASE_URL` отдельной тестовой БД. Проверка создаёт
+приглашения и аккаунты, проверяет Origin и отсутствие токена в Referer, вход в
+панель; снимки сохраняет в `output/playwright/`. Без флага браузеры не запускаются.
+
 ## Запуск бинарника
 
 `make run` и `bin/clickshield` читают переменные процесса, а не `.env`.

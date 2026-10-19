@@ -330,6 +330,9 @@ func (s *Server) security(next http.Handler) http.Handler {
 			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		}
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		if strings.HasPrefix(r.URL.Path, "/invite/") {
+			w.Header().Set("Referrer-Policy", "strict-origin")
+		}
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/login" || r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/invite/") {
 			w.Header().Set("Cache-Control", "no-store")
