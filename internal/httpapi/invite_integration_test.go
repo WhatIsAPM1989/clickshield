@@ -92,10 +92,10 @@ func TestInviteBrowserRegistration(t *testing.T) {
 			cmd.WaitDelay = 5 * time.Second
 			cmd.Env = append(os.Environ(), "CLICKSHIELD_INVITE_BROWSER="+engine, "CLICKSHIELD_INVITE_BASE="+env.srv.URL, "CLICKSHIELD_INVITE_TOKEN="+token, "CLICKSHIELD_INVITE_EMAIL="+email)
 			out, err := cmd.CombinedOutput()
-			if ctx.Err() != nil {
-				t.Fatalf("browser flow timed out: %v\n%s", ctx.Err(), out)
-			}
 			if err != nil {
+				if ctx.Err() != nil {
+					t.Fatalf("browser flow timed out: %v\n%s", ctx.Err(), out)
+				}
 				t.Fatalf("browser flow failed: %v\n%s", err, out)
 			}
 			t.Log(string(out))
